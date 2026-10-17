@@ -77,10 +77,10 @@ jobs:
 
           ### Downloads
 
-          - **Windows:** `BetterNanoMidi.exe`
-          - **macOS Apple Silicon:** `BetterNanoMidi-ARM.dmg`
-          - **macOS Intel:** `BetterNanoMidi-Intel.dmg`
-          - **Linux:** `BetterNanoMidi.tar.gz` (portable bundle) and `BetterNanoMidi` (standalone executable)
+          - **Windows:** BetterNanoMidi.exe
+          - **macOS Apple Silicon:** BetterNanoMidi-ARM.dmg
+          - **macOS Intel:** BetterNanoMidi-Intel.dmg
+          - **Linux:** BetterNanoMidi.tar.gz (portable bundle) and BetterNanoMidi (standalone executable)
           NOTES
 
           gh release create "$RELEASE_TAG" \
