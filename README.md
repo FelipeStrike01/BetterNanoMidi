@@ -1,10 +1,31 @@
 # Better NanoMidi
 
-**More music, less friction.**
+<p align="center">
+  <img src="assets/branding/better-nanomidi/readme-banner.png" alt="Abstract MIDI waveform in Better NanoMidi's graphite and terracotta palette" width="100%">
+</p>
+
+<p align="center">
+  <strong>More music, less friction.</strong><br>
+  A modern desktop home for your MIDI library, playlists, and playback.
+</p>
+
+<p align="center">
+  <a href="https://github.com/FelipeStrike01/BetterNanoMidi/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/FelipeStrike01/BetterNanoMidi/build.yml?branch=main&label=build&style=flat-square&color=C47B5A" alt="Build status"></a>
+  <img src="https://img.shields.io/badge/Python-3.12-141210?style=flat-square&logo=python&logoColor=F1EAE2" alt="Python 3.12">
+  <img src="https://img.shields.io/badge/UI-PySide6%20%2B%20Qt%20Quick-C47B5A?style=flat-square" alt="PySide6 and Qt Quick">
+  <img src="https://img.shields.io/badge/license-GPL--3.0-141210?style=flat-square" alt="GPL 3.0 license">
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#run-from-source">Quick start</a> ·
+  <a href="#build">Build</a> ·
+  <a href="#project-structure">Project structure</a> ·
+  <a href="#credits-and-license">Credits</a> ·
+  <a href="README.pt.md">Português</a>
+</p>
 
 Better NanoMidi is an independent fork of [nanoMIDIPlayer](https://github.com/NotHammer043/nanoMIDIPlayer). It keeps the original MIDI playback engine and adds a PySide6 and Qt Quick interface, a local MIDI library, broader catalog search, and optional Discord Rich Presence.
-
-[Leia em português](README.pt.md)
 
 ## Features
 

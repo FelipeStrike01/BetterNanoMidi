@@ -1,10 +1,31 @@
 # Better NanoMidi
 
-**Mais música, menos complicação.**
+<p align="center">
+  <img src="assets/branding/better-nanomidi/readme-banner.png" alt="Forma de onda MIDI abstrata na paleta grafite e terracota do Better NanoMidi" width="100%">
+</p>
+
+<p align="center">
+  <strong>Mais música, menos complicação.</strong><br>
+  Sua biblioteca MIDI, playlists e reprodução em um só lugar.
+</p>
+
+<p align="center">
+  <a href="https://github.com/FelipeStrike01/BetterNanoMidi/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/FelipeStrike01/BetterNanoMidi/build.yml?branch=main&label=build&style=flat-square&color=C47B5A" alt="Status da compilação"></a>
+  <img src="https://img.shields.io/badge/Python-3.12-141210?style=flat-square&logo=python&logoColor=F1EAE2" alt="Python 3.12">
+  <img src="https://img.shields.io/badge/interface-PySide6%20%2B%20Qt%20Quick-C47B5A?style=flat-square" alt="PySide6 e Qt Quick">
+  <img src="https://img.shields.io/badge/licença-GPL--3.0-141210?style=flat-square" alt="Licença GPL 3.0">
+</p>
+
+<p align="center">
+  <a href="#recursos">Recursos</a> ·
+  <a href="#executar-do-código-fonte">Início rápido</a> ·
+  <a href="#compilar">Compilar</a> ·
+  <a href="#estrutura">Estrutura</a> ·
+  <a href="#créditos-e-licença">Créditos</a> ·
+  <a href="README.md">English</a>
+</p>
 
 Better NanoMidi é um fork independente do [nanoMIDIPlayer](https://github.com/NotHammer043/nanoMIDIPlayer). Ele mantém o motor original de reprodução MIDI e acrescenta uma interface em PySide6 e Qt Quick, uma biblioteca MIDI local, busca ampliada no catálogo e Presença Avançada opcional do Discord.
-
-[Read in English](README.md)
 
 ## Recursos
 
