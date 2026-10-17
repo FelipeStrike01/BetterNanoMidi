@@ -178,6 +178,7 @@ class AppController(QObject):
         self._presence_mode = "idle"
         self._presence_source = "midi"
         self._presence_file = ""
+        self._presence_path = ""
         self._console_lines: dict[str, list[str]] = {name: [] for name in self.PAGE_IDS}
         self._info_html = "<h2>Loading information</h2><p>Fetching the latest project information…</p>"
         self._log_labels: list[Any] = []
@@ -486,6 +487,8 @@ class AppController(QObject):
         self._publishDiscordPresence()
 
     def _publishDiscordPresence(self) -> None:
+        cover_url = ""
+        cover_text = ""
         if self._presence_mode == "playing":
             details = "Using the Drums Player" if self._presence_source == "drums" else "Playing MIDI"
             state = self._presence_file or "MIDI file"
@@ -504,7 +507,50 @@ class AppController(QObject):
             }
             details, state = idle_copy.get(self.pageName, idle_copy["midi"])
 
-        self._discord_presence.set_activity(self.translateText(details), self.translateText(state))
+        if self._presence_mode in {"playing", "paused"} and self._presence_source == "midi":
+            cover_url, cover_text = self._discordPresenceArtwork(self._presence_path)
+        self._discord_presence.set_activity(
+            self.translateText(details),
+            self.translateText(state),
+            cover_url,
+            cover_text,
+        )
+
+    def _discordPresenceArtwork(self, path: str) -> tuple[str, str]:
+        if not path:
+            return "", ""
+
+        from modules.functions import midiHubFunctions
+
+        filename = Path(path).name
+        filename_key = self._playlistCoverKey(filename)
+        stem_key = self._playlistCoverKey(Path(filename).stem)
+        if not filename_key and not stem_key:
+            return "", ""
+
+        exact_filename = []
+        exact_title = []
+        for item in list(midiHubFunctions.allMidiData) + list(self._hub_results):
+            if not isinstance(item, dict) or str(item.get("source") or "nanomidi") != "nanomidi":
+                continue
+            midi_filename = str(item.get("midiFilename") or "")
+            candidate_filename = self._playlistCoverKey(Path(midi_filename).name)
+            candidate_stem = self._playlistCoverKey(Path(midi_filename).stem)
+            title_key = self._playlistCoverKey(str(item.get("name") or ""))
+            if filename_key and filename_key == candidate_filename or stem_key and stem_key == candidate_stem:
+                exact_filename.append(item)
+            elif stem_key and stem_key == title_key:
+                exact_title.append(item)
+
+        for candidate in exact_filename + exact_title:
+            cover_url = midiHubFunctions.fetchPublicImage(candidate)
+            if not cover_url:
+                continue
+            title = str(candidate.get("name") or Path(filename).stem)
+            artist = str(candidate.get("artists") or "").strip()
+            tooltip = f"{title} · {artist}" if artist else title
+            return cover_url, tooltip[:128]
+        return "", ""
 
     @Slot(str, str, str)
     def setPlaybackPresence(self, mode: str, filepath: str, source: str) -> None:
@@ -512,10 +558,12 @@ class AppController(QObject):
         self._presence_source = str(source)
         if mode in ("playing", "paused"):
             self._presence_mode = mode
-            self._presence_file = os.path.basename(str(filepath).strip())[:128]
+            self._presence_path = str(filepath).strip()
+            self._presence_file = os.path.basename(self._presence_path)[:128]
         else:
             self._presence_mode = "idle"
             self._presence_file = ""
+            self._presence_path = ""
         self._publishDiscordPresence()
 
     @Slot(str)
@@ -1710,6 +1758,8 @@ class AppController(QObject):
         startup_state_changed = False
         if "results" in data:
             self._hub_results = list(data.get("results") or [])
+            if self._presence_mode in {"playing", "paused"} and self._presence_source == "midi":
+                self._publishDiscordPresence()
             self._playlist_cover_cache.clear()
             self.playlistChanged.emit()
         if "downloads" in data:

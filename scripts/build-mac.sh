@@ -32,6 +32,17 @@ pip install --upgrade pip setuptools wheel pyinstaller
 pip install -r requirements.txt
 python scripts/compile_shaders.py
 
+ICON_SOURCE="assets/branding/better-nanomidi/app-icon-dark.png"
+ICONSET="build/BetterNanoMidi.iconset"
+MAC_ICON="build/BetterNanoMidi.icns"
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+    sips -s format png -z "$size" "$size" "$ICON_SOURCE" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+    double_size=$((size * 2))
+    sips -s format png -z "$double_size" "$double_size" "$ICON_SOURCE" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$MAC_ICON"
+
 if [[ "$ARCH" == "intel" ]]; then
     TARGET_ARCH="x86_64"
     DMG_NAME="BetterNanoMidi-Intel.dmg"
@@ -40,7 +51,7 @@ else
     DMG_NAME="BetterNanoMidi-ARM.dmg"
 fi
 
-pyinstaller --onefile --noconsole --noconfirm \
+pyinstaller --onedir --windowed --noconfirm \
     --target-architecture "$TARGET_ARCH" \
     --hidden-import=mido.backends.rtmidi \
     --hidden-import=PySide6.QtQml \
@@ -51,7 +62,7 @@ pyinstaller --onefile --noconsole --noconfirm \
     --add-data="ui/qml:ui/qml" \
     --paths="." \
     --name="BetterNanoMidi" \
-    --icon="assets/branding/better-nanomidi/BetterNanoMidi.ico" \
+    --icon="$MAC_ICON" \
     main.py
 
 chmod +x dist/BetterNanoMidi.app
@@ -67,7 +78,7 @@ rm -f dist/$DMG_NAME
 
 create-dmg \
     --volname "Better NanoMidi" \
-    --volicon "assets/branding/better-nanomidi/BetterNanoMidi.ico" \
+    --volicon "$MAC_ICON" \
     --background "assets/icons/integrated/dmgbackground.png" \
     --window-pos 200 120 \
     --window-size 625 400 \

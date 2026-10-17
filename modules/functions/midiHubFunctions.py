@@ -114,6 +114,7 @@ def _normaliseMidi(midi: dict) -> dict:
         "plays": 0,
         "views": int(midi.get("views") or 0),
         "midiFilename": filename,
+        "imageFilename": image,
         "downloadUrl": f"https://api.nanomidi.net/api/midis/{filename}" if filename else "",
         "imageUrl": image_url,
         "source": "nanomidi",
@@ -627,6 +628,13 @@ def preloadMidiHubForStartup() -> None:
 
 def fetchImage(midi: dict) -> str:
     return _normaliseMidi(midi).get("imageUrl", "")
+
+
+def fetchPublicImage(midi: dict) -> str:
+    image_filename = str(midi.get("imageFilename") or "").strip()
+    if not image_filename:
+        return ""
+    return f"https://api.nanomidi.net/api/v2/images/{quote(image_filename, safe='')}?size=240x240"
 
 
 def sortMidiData(selectedValue: str) -> None:

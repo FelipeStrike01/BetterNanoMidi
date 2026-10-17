@@ -41,12 +41,22 @@ class DiscordPresenceService(QObject):
             self._revision += 1
         self._wake.set()
 
-    def set_activity(self, details: str, state: str) -> None:
+    def set_activity(
+        self,
+        details: str,
+        state: str,
+        small_image: str = "",
+        small_text: str = "",
+    ) -> None:
         with self._lock:
             self._activity = {
                 "details": str(details)[:128],
                 "state": str(state)[:128],
             }
+            if small_image:
+                self._activity["small_image"] = str(small_image)[:300]
+                if small_text:
+                    self._activity["small_text"] = str(small_text)[:128]
             self._revision += 1
         self._wake.set()
 
@@ -89,13 +99,20 @@ class DiscordPresenceService(QObject):
             "large_image": "betternanomidi",
             "large_text": "Better NanoMidi",
         }
+        if activity.get("small_image"):
+            fields["small_image"] = activity["small_image"]
+            if activity.get("small_text"):
+                fields["small_text"] = activity["small_text"]
         try:
             rpc.update(**fields)
         except Exception:
-            # The activity remains useful if the developer-portal image key
-            # has not been uploaded for this Discord application yet.
-            logger.info("Discord art key unavailable; retrying without custom art")
-            rpc.update(details=fields["details"], state=fields["state"])
+            logger.info("Discord activity art unavailable; retrying without custom art")
+            fields.pop("small_image", None)
+            fields.pop("small_text", None)
+            try:
+                rpc.update(**fields)
+            except Exception:
+                rpc.update(details=fields["details"], state=fields["state"])
 
     @staticmethod
     def _connect_rpc(application_id: str) -> Any:

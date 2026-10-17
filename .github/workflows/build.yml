@@ -12,13 +12,13 @@ jobs:
   build-macos-intel:
     runs-on: macos-15-intel
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: brew install create-dmg
       - run: chmod +x scripts/build-mac.sh && scripts/build-mac.sh --arch intel
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macOS-Intel
           path: dist/BetterNanoMidi-Intel.dmg
@@ -26,13 +26,13 @@ jobs:
   build-macos-arm:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: brew install create-dmg
       - run: chmod +x scripts/build-mac.sh && scripts/build-mac.sh --arch arm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macOS-ARM
           path: dist/BetterNanoMidi-ARM.dmg
@@ -40,13 +40,13 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: sudo apt-get update && sudo apt-get install -y build-essential
+      - run: sudo apt-get update && sudo apt-get install -y build-essential libegl1 libgl1
       - run: chmod +x scripts/build-lnx.sh && scripts/build-lnx.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-build
           path: |
@@ -56,12 +56,12 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: ./scripts/build-win.bat
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-exe
           path: dist/Better NanoMid.exe
@@ -71,7 +71,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
       - name: Summarize artifacts
