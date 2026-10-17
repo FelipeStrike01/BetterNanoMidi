@@ -42,6 +42,8 @@ Item {
         accessibility: "accessibility",
         activity: "activity",
         plus: "plus",
+        star: "star",
+        starFilled: "star-filled",
         moveUp: "move-up",
         moveDown: "move-down"
     })

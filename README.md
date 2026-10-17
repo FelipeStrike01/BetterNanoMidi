@@ -35,10 +35,12 @@ Better NanoMidi is an independent fork of [nanoMIDIPlayer](https://github.com/No
 - Play MIDI files through QWERTY input or a selected MIDI output device.
 - Map incoming MIDI devices to QWERTY keys.
 - Play drum tracks with configurable keyboard mappings.
-- Browse local MIDI files and search the community catalog, with BitMidi as a fallback.
+- Preview MIDI Hub tracks for up to 15 seconds before saving them to your library.
+- Browse, search, and favorite downloaded MIDI files in a dedicated local library.
+- Search the community catalog, with BitMidi as a fallback.
 - Build ordered MIDI playlists and move to the next track automatically when one ends.
 - Configure sustain, velocity, pitch, speed, keyboard range, and hotkeys.
-- Use the interface in English or Portuguese, with optional Discord Rich Presence.
+- Use the interface in English or Portuguese, with Discord Rich Presence for app sections, playlist editing, and current playback.
 - Run on Windows, macOS, and Linux; available input and MIDI features depend on the operating system and installed devices.
 
 The app keeps its configuration and downloaded MIDI files under `Documents/nanoMIDIPlayer` to preserve compatibility with existing installations.
@@ -71,6 +73,10 @@ scripts\build-win.bat
 ```
 
 The Windows build produces `dist/Better NanoMid.exe`. macOS and Linux builds use the `BetterNanoMidi` name. GitHub Actions builds all four targets on pushes, pull requests, and manual runs; download the artifacts from the workflow run.
+
+## Releases
+
+Download the latest Windows, macOS, or Linux build from the [Releases page](https://github.com/FelipeStrike01/BetterNanoMidi/releases/latest).
 
 Automatic update checks are disabled until Better NanoMidi has its own release repository. They will not download binaries from the original project.
 

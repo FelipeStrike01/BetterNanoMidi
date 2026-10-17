@@ -35,10 +35,12 @@ Better NanoMidi é um fork independente do [nanoMIDIPlayer](https://github.com/N
 - Reproduza arquivos MIDI pelo teclado QWERTY ou por uma saída MIDI selecionada.
 - Mapeie dispositivos MIDI de entrada para teclas QWERTY.
 - Reproduza faixas de bateria com mapeamentos de teclado configuráveis.
-- Navegue pelos MIDIs locais e pesquise no catálogo da comunidade, com fallback para o BitMidi.
+- Ouça uma prévia de até 15 segundos dos MIDIs do catálogo antes de salvá-los na biblioteca.
+- Navegue, pesquise e favorite arquivos MIDI baixados em uma biblioteca local dedicada.
+- Pesquise no catálogo da comunidade, com fallback para o BitMidi.
 - Organize playlists MIDI em ordem e avance automaticamente para a próxima faixa.
 - Configure sustain, velocity, afinação, velocidade, extensão do teclado e atalhos.
-- Use a interface em português ou inglês, com Presença Avançada opcional no Discord.
+- Use a interface em português ou inglês, com Presença Avançada do Discord nas seções, ao editar playlists e durante a reprodução.
 - Disponível para Windows, macOS e Linux; os recursos de entrada e MIDI dependem do sistema operacional e dos dispositivos instalados.
 
 Para manter compatibilidade com instalações existentes, as configurações e os MIDIs baixados continuam em `Documents/nanoMIDIPlayer`.
@@ -71,6 +73,10 @@ scripts\build-win.bat
 ```
 
 A compilação do Windows gera `dist/Better NanoMid.exe`. No macOS e no Linux, o nome é `BetterNanoMidi`. O GitHub Actions compila os quatro destinos em pushes, pull requests e execuções manuais; os arquivos ficam disponíveis nos artefatos da execução.
+
+## Releases
+
+Baixe a versão mais recente para Windows, macOS ou Linux na página de [releases](https://github.com/FelipeStrike01/BetterNanoMidi/releases/latest).
 
 As atualizações automáticas ficam desativadas até o Better NanoMidi ter seu próprio repositório de releases. O aplicativo não baixa executáveis do projeto original.
 

@@ -65,10 +65,15 @@ jobs:
             exit 1
           fi
 
-          cat > release-notes.md <<'NOTES'
-          ## Better NanoMidi v1.0.1
+          cat > release-notes.md <<NOTES
+          ## Better NanoMidi ${RELEASE_TAG}
 
-          This release fixes cross-platform packaging for Linux and macOS, refreshes the GitHub Actions toolchain, and includes the latest Better NanoMidi improvements.
+          ### What's new
+
+          - Preview MIDI Hub tracks for up to 15 seconds before downloading them.
+          - Browse and favorite MIDI files in the new local library.
+          - See Discord Rich Presence for the current app section, playlist editing, and playback.
+          - Includes the latest interface, animation, and cross-platform packaging improvements.
 
           ### Downloads
 

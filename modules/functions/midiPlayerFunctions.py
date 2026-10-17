@@ -36,6 +36,9 @@ switchNoDoublesvar = CompatVar("off")
 switchVelocityvar = CompatVar("off")
 switch88Keysvar = CompatVar("off")
 currentMidiDuration = 0.0
+previewPlayback = False
+previewFile = ""
+previewGeneration = 0
 
 def isPlaylistPlaybackActive():
     return bool(app and getattr(app, "playlistActive", False))
@@ -284,8 +287,11 @@ def playButton():
         logger.exception(f"playButton error: {e}")
 
 def startPlayback():
+    global previewPlayback, previewFile
     logger.info("startPlayback called")
     try:
+        if previewPlayback:
+            stopPlayback(cancelPlaylist=False)
         midiFile = MidiPlayerTab.filePathEntry.get()
         logger.debug(f"startPlayback midiFile: {midiFile}")
         if not os.path.exists(midiFile):
@@ -347,18 +353,60 @@ def startPlayback():
     except Exception as e:
         logger.exception(f"startPlayback error: {e}")
 
+def startPreviewPlayback(midiFile, outputDevice, totalSeconds, displayName="MIDI preview", generation=0):
+    global previewPlayback, previewFile, previewGeneration
+    if app and app.isRunning:
+        raise RuntimeError("Stop the current playback before previewing another MIDI.")
+
+    previewPlayback = True
+    previewFile = str(displayName or "MIDI preview")
+    previewGeneration = int(generation)
+    app.isRunning = True
+    MidiPlayerTab.playButton.configure(
+        text="Playing",
+        fg_color=customTheme.activeThemeData["Theme"]["MidiPlayer"]["PlayingColor"],
+        hover_color=customTheme.activeThemeData["Theme"]["MidiPlayer"]["PlayingColorHover"]
+    )
+    MidiPlayerTab.stopButton.configure(
+        state="normal",
+        fg_color=customTheme.activeThemeData["Theme"]["MidiPlayer"]["StopColor"]
+    )
+    app.setPlaybackPresence("playing", previewFile, "midi")
+
+    try:
+        started = useOutput.startPlayback(
+            midiFile,
+            outputDevice,
+            totalSeconds=totalSeconds,
+            preview=True,
+        )
+        if not started:
+            raise RuntimeError("The MIDI output is already in use.")
+    except Exception:
+        previewPlayback = False
+        previewFile = ""
+        previewGeneration = 0
+        app.isRunning = False
+        bindControls()
+        app.setPlaybackPresence("stopped", "", "midi")
+        raise
+    return True
+
 def stopPlayback(natural=False, cancelPlaylist=None):
+    global previewPlayback, previewFile, previewGeneration
     logger.info("stopPlayback called")
     try:
+        wasPreview = previewPlayback
+        endedPreviewGeneration = previewGeneration
         if cancelPlaylist is None:
-            cancelPlaylist = not natural
+            cancelPlaylist = not natural and not wasPreview
         if cancelPlaylist and app and hasattr(app, "cancelMidiPlaylist"):
             app.cancelMidiPlaylist()
 
         if not app.isRunning:
             return
 
-        useMIDI = configuration.configData["midiPlayer"]["useMIDIOutput"]
+        useMIDI = wasPreview or configuration.configData["midiPlayer"]["useMIDIOutput"]
 
         if useMIDI:
             useOutput.stopPlayback()
@@ -388,7 +436,12 @@ def stopPlayback(natural=False, cancelPlaylist=None):
             )
             MidiPlayerTab.timelineIndicator.configure(text=timelineText)
         app.setPlaybackPresence("stopped", "", "midi")
-        if natural and hasattr(app, "midiPlaylistPlaybackFinished"):
+        previewPlayback = False
+        previewFile = ""
+        previewGeneration = 0
+        if wasPreview and hasattr(app, "hubPreviewPlaybackEnded"):
+            app.hubPreviewPlaybackEnded.emit(endedPreviewGeneration)
+        if natural and not wasPreview and hasattr(app, "midiPlaylistPlaybackFinished"):
             app.midiPlaylistPlaybackFinished.emit()
         logger.debug("stopPlayback completed")
     except Exception as e:
@@ -400,7 +453,7 @@ def pausePlayback():
         if not app.isRunning:
             return
 
-        useMIDI = configuration.configData["midiPlayer"]["useMIDIOutput"]
+        useMIDI = previewPlayback or configuration.configData["midiPlayer"]["useMIDIOutput"]
         paused = False
 
         if useMIDI:
@@ -424,7 +477,7 @@ def pausePlayback():
                 fg_color=customTheme.activeThemeData["Theme"]["MidiPlayer"]["PlayingColor"],
                 hover_color=customTheme.activeThemeData["Theme"]["MidiPlayer"]["PlayingColorHover"]
             )
-        midiFile = MidiPlayerTab.filePathEntry.get()
+        midiFile = previewFile if previewPlayback else MidiPlayerTab.filePathEntry.get()
         app.setPlaybackPresence("paused" if paused else "playing", midiFile, "midi")
         logger.debug("pausePlayback state updated")
     except Exception as e:

@@ -2,6 +2,7 @@
   "midiPlayer": {
     "currentFile": "",
     "midiList": [],
+    "favoriteMidis": [],
     "playlist": [],
     "playlists": [],
     "activePlaylistId": "",

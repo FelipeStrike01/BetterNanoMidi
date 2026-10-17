@@ -10,6 +10,9 @@ Item {
     property bool compactLayout: false
     property bool editingPlaylist: false
 
+    Component.onCompleted: root.controller.setPlaylistEditing(root.editingPlaylist)
+    onEditingPlaylistChanged: root.controller.setPlaylistEditing(root.editingPlaylist)
+
     ScrollView {
         id: pageScroll
         anchors.fill: parent

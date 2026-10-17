@@ -303,6 +303,7 @@ Window {
                             NavButton { compact: window.compactNavigation; accentColor: window.themePalette.accent; textColor: window.themePalette.text; mutedColor: window.themePalette.muted; label: window.t("Drums Player"); iconName: "drums"; selected: controller.currentPage === 1; onActivated: controller.navigate("drums") }
                             NavButton { compact: window.compactNavigation; accentColor: controller.currentPage === 2 ? "#46d5a0" : window.themePalette.accent; textColor: window.themePalette.text; mutedColor: window.themePalette.muted; label: window.t("MIDI Hub"); iconName: "library"; selected: controller.currentPage === 2; onActivated: controller.navigate("hub") }
                             NavButton { compact: window.compactNavigation; accentColor: window.themePalette.accent; textColor: window.themePalette.text; mutedColor: window.themePalette.muted; label: window.t("MIDI to QWERTY"); iconName: "keyboard"; selected: controller.currentPage === 3; onActivated: controller.navigate("miditoqwerty") }
+                            NavButton { compact: window.compactNavigation; accentColor: window.themePalette.accent; textColor: window.themePalette.text; mutedColor: window.themePalette.muted; label: window.t("My MIDI Library"); iconName: "library"; selected: controller.currentPage === 8; onActivated: controller.navigate("library") }
                             NavButton { compact: window.compactNavigation; accentColor: window.themePalette.accent; textColor: window.themePalette.text; mutedColor: window.themePalette.muted; label: window.t("Playlists"); iconName: "playlist"; selected: controller.currentPage === 7; onActivated: controller.navigate("playlists") }
                         }
                         Item { Layout.fillHeight: true }
@@ -993,8 +994,8 @@ Window {
                                                     }
                                                     Column {
                                                         id: hubActivity
-                                                        anchors.right: hubDownload.left
-                                                        anchors.rightMargin: window.compactLayout ? 5 : 12
+                                                        anchors.right: hubPreview.left
+                                                        anchors.rightMargin: window.compactLayout ? 5 : 9
                                                         anchors.verticalCenter: parent.verticalCenter
                                                         width: hubRow.activityWidth
                                                         spacing: 7
@@ -1011,6 +1012,17 @@ Window {
                                                         downloadState: String(controller.hubDownloadStates[hubRow.modelData.downloadUrl] || "idle")
                                                         hasUrl: String(hubRow.modelData.downloadUrl || "").length > 0
                                                         onClicked: controller.downloadMidi(hubRow.modelData.downloadUrl)
+                                                    }
+                                                    HubPreviewButton {
+                                                        id: hubPreview
+                                                        controller: window.appController
+                                                        anchors.right: hubDownload.left
+                                                        anchors.rightMargin: 5
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        accentColor: hubPage.hubAccent
+                                                        previewState: String(controller.hubPreviewStates[hubRow.modelData.downloadUrl] || "idle")
+                                                        hasUrl: String(hubRow.modelData.downloadUrl || "").length > 0
+                                                        onClicked: controller.previewMidi(hubRow.modelData.downloadUrl)
                                                     }
                                                     MouseArea { id: rowMouse; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton; z: 3 }
                                                 }
@@ -1269,6 +1281,12 @@ Window {
                         }
 
                         PlaylistManagerPage {
+                            controller: window.appController
+                            themePalette: window.themePalette
+                            compactLayout: window.compactLayout
+                        }
+
+                        DownloadedLibraryPage {
                             controller: window.appController
                             themePalette: window.themePalette
                             compactLayout: window.compactLayout

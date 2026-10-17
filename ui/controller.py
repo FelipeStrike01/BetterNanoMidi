@@ -11,6 +11,7 @@ import os
 import platform
 import sys
 import threading
+import tempfile
 import unicodedata
 import uuid
 import webbrowser
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import markdown
+import requests
 from PySide6.QtCore import QObject, Property, QStandardPaths, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtQml import QQmlPropertyMap
 from PySide6.QtWidgets import QFileDialog, QMessageBox
@@ -54,6 +56,64 @@ class MidiMetadataWorker(QThread):
             self.failed.emit(self.path, str(error), self.generation)
 
 
+class HubMidiPreviewWorker(QThread):
+    ready = Signal(int, str, str, float)
+    failed = Signal(int, str, str)
+
+    def __init__(self, url: str, generation: int, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.url = url
+        self.generation = generation
+
+    def run(self) -> None:
+        temporary_path = ""
+        try:
+            from urllib.parse import urlparse
+            from mido import MidiFile
+
+            if urlparse(self.url).scheme.lower() != "https":
+                raise ValueError("Preview links must use HTTPS.")
+
+            with requests.get(
+                self.url,
+                headers={"User-Agent": "BetterNanoMidi/1.0"},
+                timeout=(8, 25),
+                stream=True,
+            ) as response:
+                response.raise_for_status()
+                with tempfile.NamedTemporaryFile(
+                    prefix="betternanomidi-preview-",
+                    suffix=".mid",
+                    delete=False,
+                ) as midi_file:
+                    temporary_path = midi_file.name
+                    total_bytes = 0
+                    for chunk in response.iter_content(chunk_size=64 * 1024):
+                        if self.isInterruptionRequested():
+                            raise InterruptedError("Preview cancelled.")
+                        if not chunk:
+                            continue
+                        total_bytes += len(chunk)
+                        if total_bytes > 64 * 1024 * 1024:
+                            raise ValueError("The MIDI file is too large to preview.")
+                        midi_file.write(chunk)
+
+            midi = MidiFile(temporary_path, clip=True)
+            duration = float(midi.length)
+            if not midi.tracks or not math.isfinite(duration) or duration <= 0:
+                raise ValueError("The catalog returned an empty or invalid MIDI file.")
+
+            self.ready.emit(self.generation, self.url, temporary_path, duration)
+            temporary_path = ""
+        except Exception as error:
+            if temporary_path:
+                try:
+                    os.remove(temporary_path)
+                except OSError:
+                    logger.debug("Could not remove failed MIDI preview %s", temporary_path, exc_info=True)
+            self.failed.emit(self.generation, self.url, str(error))
+
+
 class AppController(QObject):
     pageChanged = Signal()
     settingsChanged = Signal()
@@ -65,6 +125,7 @@ class AppController(QObject):
     playbackSpeedChanged = Signal()
     consoleChanged = Signal()
     hubChanged = Signal()
+    hubPreviewPlaybackEnded = Signal(int)
     startupChanged = Signal()
     themeChanged = Signal()
     infoChanged = Signal()
@@ -87,6 +148,7 @@ class AppController(QObject):
         "settings": 4,
         "info": 5,
         "darwinpermission": 6,
+        "library": 8,
     }
     PAGE_NAMES = {value: key for key, value in PAGE_IDS.items()}
     PAGE_LABELS = {
@@ -98,6 +160,7 @@ class AppController(QObject):
         "settings": "Settings",
         "info": "About Better NanoMidi",
         "darwinpermission": "Permissions",
+        "library": "My MIDI Library",
     }
 
     def __init__(self) -> None:
@@ -129,6 +192,17 @@ class AppController(QObject):
         self._hub_results: list[dict] = []
         self._playlist_cover_cache: dict[str, str] = {}
         self._hub_download_states: dict[str, str] = {}
+        self._hub_preview_states: dict[str, str] = {}
+        self._hub_preview_generation = 0
+        self._hub_preview_url = ""
+        self._hub_preview_path = ""
+        self._hub_preview_device = ""
+        self._hub_preview_active = False
+        self._hub_preview_worker: HubMidiPreviewWorker | None = None
+        self._hub_preview_workers: dict[int, HubMidiPreviewWorker] = {}
+        self._hub_preview_timer = QTimer(self)
+        self._hub_preview_timer.setSingleShot(True)
+        self._hub_preview_timer.timeout.connect(self._finishHubMidiPreview)
         self._hub_loading = False
         self._hub_error = ""
         self._hub_notice = ""
@@ -146,6 +220,9 @@ class AppController(QObject):
         self._midi_show_errors: dict[int, bool] = {}
         self._midi_library: list[dict[str, Any]] = []
         midi_settings = configuration.configData.get("midiPlayer", {})
+        self._favorite_midi_paths = self._normalizeFavoriteMidiPaths(
+            midi_settings.get("favoriteMidis", [])
+        )
         self._playlists = self._normalizePlaylists(midi_settings.get("playlists", []))
         legacy_playlist = self._normalizePlaylist(midi_settings.get("playlist", []))
         migrated_legacy_playlist = not self._playlists and bool(legacy_playlist)
@@ -169,6 +246,8 @@ class AppController(QObject):
         self._playlist_active = False
         self._pending_playlist_path = ""
         self._pending_playlist_index = -1
+        self._playlist_editing = False
+        self._pending_library_play_path = ""
         if migrated_legacy_playlist or configured_playlist_id != self._active_playlist_id:
             self._saveMidiPlaylist()
         self._midi_load_generation = 0
@@ -199,6 +278,9 @@ class AppController(QObject):
         self.dialogRequested.connect(self._showDialog, Qt.ConnectionType.QueuedConnection)
         self.confirmRequested.connect(self._confirm, Qt.ConnectionType.QueuedConnection)
         self.hubStateRequested.connect(self._applyHubState, Qt.ConnectionType.QueuedConnection)
+        self.hubPreviewPlaybackEnded.connect(
+            self._onHubPreviewPlaybackEnded, Qt.ConnectionType.QueuedConnection
+        )
         self.downloadedMidiRequested.connect(self._scheduleDownloadedMidiOpen, Qt.ConnectionType.QueuedConnection)
         self.midiPlaylistPlaybackFinished.connect(
             self._advanceMidiPlaylist, Qt.ConnectionType.QueuedConnection
@@ -427,7 +509,7 @@ class AppController(QObject):
 
     @currentPage.setter
     def currentPage(self, value: int) -> None:
-        value = max(0, min(7, int(value)))
+        value = max(0, min(8, int(value)))
         if self._current_page != value:
             self._current_page = value
             self.pageChanged.emit()
@@ -489,25 +571,41 @@ class AppController(QObject):
     def _publishDiscordPresence(self) -> None:
         cover_url = ""
         cover_text = ""
-        if self._presence_mode == "playing":
-            details = "Using the Drums Player" if self._presence_source == "drums" else "Playing MIDI"
-            state = self._presence_file or "MIDI file"
-        elif self._presence_mode == "paused":
-            details = "Drums Player paused" if self._presence_source == "drums" else "MIDI paused"
-            state = self._presence_file or "MIDI file"
-        else:
-            idle_copy = {
-                "midi": ("Ready to play", "Select a MIDI to get started"),
-                "drums": ("Using the Drums Player", "Ready to play drums"),
-                "hub": ("Exploring the MIDI Hub", "Searching community scores"),
-                "miditoqwerty": ("Using MIDI to QWERTY", "Converting MIDI to keyboard input"),
-                "settings": ("Adjusting preferences", "Better NanoMidi settings"),
-                "info": ("Learning about Better NanoMidi", "About the application"),
-                "darwinpermission": ("Adjusting permissions", "Better NanoMidi"),
-            }
-            details, state = idle_copy.get(self.pageName, idle_copy["midi"])
+        page_copy = {
+            "midi": ("Ready to play", "Select a MIDI to get started"),
+            "drums": ("Using the Drums Player", "Ready to play drums"),
+            "hub": ("Exploring the MIDI Hub", "Searching community scores"),
+            "miditoqwerty": ("Using MIDI to QWERTY", "Converting MIDI to keyboard input"),
+            "playlists": ("Managing playlists", "Choose a playlist to edit"),
+            "library": ("Browsing MIDI Library", "Search, favorite, and organize downloaded MIDIs"),
+            "settings": ("Adjusting preferences", "Better NanoMidi settings"),
+            "info": ("Learning about Better NanoMidi", "About the application"),
+            "darwinpermission": ("Adjusting permissions", "Better NanoMidi"),
+        }
+        details, state = page_copy.get(self.pageName, page_copy["midi"])
 
-        if self._presence_mode in {"playing", "paused"} and self._presence_source == "midi":
+        is_playing = self._presence_mode in {"playing", "paused"}
+        is_player_tab = (
+            self.pageName == "midi" and self._presence_source == "midi"
+        ) or (
+            self.pageName == "drums" and self._presence_source == "drums"
+        )
+
+        if self.pageName == "playlists" and self._playlist_editing:
+            details = "Editing a playlist"
+            playlist = self._activePlaylistRecord()
+            state = playlist["name"] if playlist else "Playlist editor"
+        elif is_playing and is_player_tab:
+            if self._presence_source == "drums":
+                details = "Using the Drums Player" if self._presence_mode == "playing" else "Drums Player paused"
+            else:
+                details = "Playing MIDI" if self._presence_mode == "playing" else "MIDI paused"
+            state = self._presence_file or "MIDI file"
+        elif is_playing:
+            status = self.translateText("Paused" if self._presence_mode == "paused" else "Playing")
+            state = f"{status}: {self._presence_file or 'MIDI file'}"
+
+        if is_playing and self._presence_source == "midi":
             cover_url, cover_text = self._discordPresenceArtwork(self._presence_path)
         self._discord_presence.set_activity(
             self.translateText(details),
@@ -566,6 +664,15 @@ class AppController(QObject):
             self._presence_path = ""
         self._publishDiscordPresence()
 
+    @Slot(bool)
+    def setPlaylistEditing(self, editing: bool) -> None:
+        editing = bool(editing)
+        if self._playlist_editing == editing:
+            return
+        self._playlist_editing = editing
+        if self.pageName == "playlists":
+            self._publishDiscordPresence()
+
     @Slot(str)
     def setDiscordApplicationId(self, application_id: str) -> None:
         normalized = "".join(ch for ch in str(application_id) if ch.isdigit())[:20]
@@ -590,7 +697,11 @@ class AppController(QObject):
 
     @Property("QVariantList", notify=midiLibraryChanged)
     def midiLibrary(self) -> list[dict[str, Any]]:
-        return [dict(entry) for entry in self._midi_library]
+        favorites = {os.path.normcase(path) for path in self._favorite_midi_paths}
+        return [
+            {**entry, "favorite": os.path.normcase(entry["path"]) in favorites}
+            for entry in self._midi_library
+        ]
 
     @Property("QVariantList", notify=playlistChanged)
     def midiPlaylist(self) -> list[dict[str, Any]]:
@@ -721,6 +832,14 @@ class AppController(QObject):
     def hubDownloadStates(self) -> dict[str, str]:
         return dict(self._hub_download_states)
 
+    @Property("QVariantMap", notify=hubChanged)
+    def hubPreviewStates(self) -> dict[str, str]:
+        return dict(self._hub_preview_states)
+
+    @Property(bool, notify=hubChanged)
+    def hubPreviewActive(self) -> bool:
+        return self._hub_preview_active
+
     @Property(bool, notify=hubChanged)
     def hubLoading(self) -> bool:
         return self._hub_loading
@@ -783,7 +902,10 @@ class AppController(QObject):
 
     @Slot(str)
     def navigate(self, page: str) -> None:
-        if str(page).lower() == "hub" and not self._hub_catalog_requested:
+        page_name = str(page).lower()
+        if page_name == "library":
+            self._refreshMidiLibrary()
+        if page_name == "hub" and not self._hub_catalog_requested:
             self._hub_catalog_requested = True
             self.hub.loadMidiData()
         self.showFrame(page)
@@ -804,8 +926,7 @@ class AppController(QObject):
 
         mainFunctions.tabBind(self._current_page)
         self._refreshSnapshot()
-        if self._presence_mode == "idle":
-            self._publishDiscordPresence()
+        self._publishDiscordPresence()
 
     @Slot()
     def refreshDevices(self) -> None:
@@ -824,6 +945,52 @@ class AppController(QObject):
     @Slot()
     def refreshMidiLibrary(self) -> None:
         self._refreshMidiLibrary()
+
+    @Slot(str)
+    def toggleMidiFavorite(self, path: str) -> None:
+        normalized_path = os.path.abspath(os.path.expanduser(str(path or "").strip()))
+        if Path(normalized_path).suffix.lower() not in {".mid", ".midi"}:
+            return
+
+        key = os.path.normcase(normalized_path)
+        favorite_keys = {os.path.normcase(item) for item in self._favorite_midi_paths}
+        if key in favorite_keys:
+            self._favorite_midi_paths = [
+                item for item in self._favorite_midi_paths
+                if os.path.normcase(item) != key
+            ]
+        elif os.path.isfile(normalized_path):
+            self._favorite_midi_paths.append(normalized_path)
+
+        configuration.configData["midiPlayer"]["favoriteMidis"] = list(self._favorite_midi_paths)
+        configuration.configData.save()
+        self.midiLibraryChanged.emit()
+
+    @Slot(str)
+    def playMidiFromLibrary(self, path: str) -> None:
+        normalized_path = os.path.abspath(os.path.expanduser(str(path or "").strip()))
+        if not os.path.isfile(normalized_path):
+            self._refreshMidiLibrary()
+            self.dialogRequested.emit("MIDI file not found", normalized_path, "error")
+            return
+
+        self._pending_library_play_path = os.path.normcase(normalized_path)
+        self.showFrame("midi")
+        self._queueMidiLoad(normalized_path)
+
+    @Slot(str)
+    def addMidiToPlaylist(self, path: str) -> None:
+        normalized_path = os.path.abspath(os.path.expanduser(str(path or "").strip()))
+        if not os.path.isfile(normalized_path):
+            self._refreshMidiLibrary()
+            return
+        if not self._playlists:
+            self.createPlaylist()
+        self._appendPlaylistPaths([normalized_path])
+
+    @Slot(str, result=str)
+    def midiCoverForPath(self, path: str) -> str:
+        return self._playlistCoverForPath(str(path or ""))
 
     def _refreshMidiLibrary(self) -> None:
         midi_settings = configuration.configData.get("midiPlayer", {})
@@ -925,6 +1092,23 @@ class AppController(QObject):
                 seen.add(key)
         return normalized
 
+    @staticmethod
+    def _normalizeFavoriteMidiPaths(paths: Any) -> list[str]:
+        if not isinstance(paths, (list, tuple)):
+            return []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in paths:
+            raw_path = str(value or "").strip()
+            if not raw_path or Path(raw_path).suffix.lower() not in {".mid", ".midi"}:
+                continue
+            path = os.path.abspath(os.path.expanduser(raw_path))
+            key = os.path.normcase(path)
+            if key not in seen:
+                normalized.append(path)
+                seen.add(key)
+        return normalized
+
     def _normalizePlaylists(self, values: Any) -> list[dict[str, Any]]:
         if not isinstance(values, (list, tuple)):
             return []
@@ -1014,6 +1198,8 @@ class AppController(QObject):
         self._playlists[index]["name"] = name
         self._saveMidiPlaylist()
         self.playlistChanged.emit()
+        if self.pageName == "playlists" and self._playlist_editing:
+            self._publishDiscordPresence()
 
     @Slot(int)
     def deletePlaylist(self, index: int) -> None:
@@ -1031,6 +1217,8 @@ class AppController(QObject):
         self._saveMidiPlaylist()
         self._refreshMidiLibrary()
         self.playlistChanged.emit()
+        if self.pageName == "playlists" and self._playlist_editing:
+            self._publishDiscordPresence()
 
     def _openPlaylistPicker(self) -> None:
         if getattr(self, "_playlist_dialog", None) is not None:
@@ -1254,6 +1442,12 @@ class AppController(QObject):
                 self.dialogRequested.emit("MIDI file not found", path, "error")
             return
 
+        self._stopHubMidiPreview()
+
+        path_key = os.path.normcase(path)
+        if self._pending_library_play_path and self._pending_library_play_path != path_key:
+            self._pending_library_play_path = ""
+
         playlist_load = bool(self._pending_playlist_path) and (
             os.path.normcase(self._pending_playlist_path) == os.path.normcase(path)
         )
@@ -1336,6 +1530,9 @@ class AppController(QObject):
         self.playlistChanged.emit()
         if playlist_request:
             QTimer.singleShot(0, self.midiPlayer.startPlayback)
+        elif self._pending_library_play_path == normalized_path:
+            self._pending_library_play_path = ""
+            QTimer.singleShot(0, self.midiPlayer.startPlayback)
 
     @Slot(str, str, int)
     def _onMidiLoadFailed(self, path: str, error: str, generation: int) -> None:
@@ -1350,6 +1547,8 @@ class AppController(QObject):
         if playlist_request:
             self._pending_playlist_path = ""
             self._pending_playlist_index = -1
+        if self._pending_library_play_path == normalized_path:
+            self._pending_library_play_path = ""
 
         previous_path = str(configuration.configData.get("midiPlayer", {}).get("currentFile", "") or "")
         if previous_path and os.path.isfile(previous_path):
@@ -1393,6 +1592,7 @@ class AppController(QObject):
 
     @Slot()
     def playMidi(self) -> None:
+        self._stopHubMidiPreview()
         self.midiPlayer.startPlayback()
         self._refreshSnapshot()
 
@@ -1403,11 +1603,14 @@ class AppController(QObject):
 
     @Slot()
     def stopMidi(self) -> None:
+        self._pending_library_play_path = ""
+        self._stopHubMidiPreview()
         self.midiPlayer.stopPlayback()
         self._refreshSnapshot()
 
     @Slot()
     def playDrums(self) -> None:
+        self._stopHubMidiPreview()
         self.drums.startPlayback()
         self._refreshSnapshot()
 
@@ -1638,9 +1841,182 @@ class AppController(QObject):
         url = str(url or "")
         if not url or self._hub_download_states.get(url) == "downloading":
             return
+        self._stopHubMidiPreview()
         self._hub_download_states[url] = "downloading"
         self.hubChanged.emit()
         self.hub.downloadMidi(url)
+
+    @Slot(str)
+    def previewMidi(self, url: str) -> None:
+        url = str(url or "").strip()
+        if not url:
+            return
+
+        state = self._hub_preview_states.get(url, "idle")
+        if url == self._hub_preview_url and state in {"loading", "playing"}:
+            self._stopHubMidiPreview()
+            return
+        if self.isRunning and not self._hub_preview_active:
+            self.dialogRequested.emit(
+                "Preview unavailable",
+                "Stop the current playback before previewing a MIDI.",
+                "info",
+            )
+            return
+
+        output_device = str(widgetProxy("midiPlayer", "outputDeviceDropdown").get() or "").strip()
+        if not output_device or output_device == "No output devices":
+            self.dialogRequested.emit(
+                "Preview unavailable",
+                "No MIDI output device is available. Select a MIDI synthesizer in MIDI Player settings.",
+                "info",
+            )
+            return
+
+        self._stopHubMidiPreview()
+        self._hub_preview_generation += 1
+        generation = self._hub_preview_generation
+        self._hub_preview_url = url
+        self._hub_preview_device = output_device
+        self._hub_preview_states[url] = "loading"
+
+        worker = HubMidiPreviewWorker(url, generation, self)
+        worker.ready.connect(self._onHubMidiPreviewReady)
+        worker.failed.connect(self._onHubMidiPreviewFailed)
+        worker.finished.connect(
+            lambda g=generation, w=worker: self._releaseHubMidiPreviewWorker(g, w)
+        )
+        self._hub_preview_worker = worker
+        self._hub_preview_workers[generation] = worker
+        self.hubChanged.emit()
+        worker.start()
+
+    @Slot(int, str, str, float)
+    def _onHubMidiPreviewReady(self, generation: int, url: str, path: str, duration: float) -> None:
+        if generation != self._hub_preview_generation or url != self._hub_preview_url:
+            self._removeHubPreviewFile(path)
+            return
+
+        if self.isRunning and not self._hub_preview_active:
+            self._removeHubPreviewFile(path)
+            self._onHubMidiPreviewFailed(
+                generation,
+                url,
+                "Stop the current playback before previewing a MIDI.",
+            )
+            return
+
+        preview_seconds = min(15.0, max(0.0, float(duration)))
+        if preview_seconds <= 0:
+            self._onHubMidiPreviewFailed(generation, url, "The MIDI file has no playable duration.")
+            self._removeHubPreviewFile(path)
+            return
+
+        midi_item = next(
+            (item for item in self._hub_results if str(item.get("downloadUrl") or "") == url),
+            {},
+        )
+        display_name = str(midi_item.get("name") or Path(url).stem or "MIDI preview")
+        if not display_name.lower().endswith((".mid", ".midi")):
+            display_name += ".mid"
+
+        self._hub_preview_path = path
+        try:
+            self.midiPlayer.startPreviewPlayback(
+                path,
+                self._hub_preview_device,
+                preview_seconds,
+                display_name,
+                generation,
+            )
+        except Exception as error:
+            logger.exception("Could not start MIDI Hub preview")
+            self._onHubMidiPreviewFailed(generation, url, str(error))
+            self._removeHubPreviewFile(path)
+            self._hub_preview_path = ""
+            return
+
+        self._hub_preview_active = True
+        self._hub_preview_states[url] = "playing"
+        self.hubChanged.emit()
+        self._hub_preview_timer.start(max(1, int(preview_seconds * 1000)))
+
+    @Slot(int, str, str)
+    def _onHubMidiPreviewFailed(self, generation: int, url: str, error: str) -> None:
+        if generation != self._hub_preview_generation or url != self._hub_preview_url:
+            return
+
+        self._hub_preview_timer.stop()
+        self._hub_preview_active = False
+        self._hub_preview_url = ""
+        self._hub_preview_device = ""
+        self._hub_preview_states[url] = "error"
+        self.hubChanged.emit()
+        self.dialogRequested.emit(
+            "Preview failed",
+            f"{self.translateText('Could not preview this MIDI file.')}\n{error}",
+            "error",
+        )
+        QTimer.singleShot(
+            3000,
+            lambda u=url, g=generation: self._clearHubPreviewError(u, g),
+        )
+
+    def _clearHubPreviewError(self, url: str, generation: int) -> None:
+        if generation != self._hub_preview_generation:
+            return
+        if self._hub_preview_states.get(url) == "error":
+            self._hub_preview_states.pop(url, None)
+            self.hubChanged.emit()
+
+    @Slot(int)
+    def _onHubPreviewPlaybackEnded(self, generation: int) -> None:
+        if generation == self._hub_preview_generation and self._hub_preview_active:
+            self._stopHubMidiPreview()
+
+    @Slot()
+    def _finishHubMidiPreview(self) -> None:
+        self._stopHubMidiPreview()
+
+    def _stopHubMidiPreview(self) -> None:
+        previous_url = self._hub_preview_url
+        self._hub_preview_generation += 1
+        self._hub_preview_timer.stop()
+
+        for worker in tuple(self._hub_preview_workers.values()):
+            if worker.isRunning():
+                worker.requestInterruption()
+        self._hub_preview_worker = None
+
+        if self._hub_preview_active or getattr(self.midiPlayer, "previewPlayback", False):
+            self.midiPlayer.stopPlayback(natural=False, cancelPlaylist=False)
+        self._hub_preview_active = False
+        self._hub_preview_url = ""
+        self._hub_preview_device = ""
+        path = self._hub_preview_path
+        self._hub_preview_path = ""
+        self._removeHubPreviewFile(path)
+
+        if self._hub_preview_states:
+            self._hub_preview_states.clear()
+            self.hubChanged.emit()
+
+    def _removeHubPreviewFile(self, path: str) -> None:
+        if not path:
+            return
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.debug("Could not remove MIDI preview temporary file %s", path, exc_info=True)
+
+    def _releaseHubMidiPreviewWorker(self, generation: int, worker: HubMidiPreviewWorker) -> None:
+        if self._hub_preview_workers.get(generation) is worker:
+            self._hub_preview_workers.pop(generation, None)
+        if self._hub_preview_worker is worker:
+            self._hub_preview_worker = None
+        worker.deleteLater()
 
     @Slot()
     def clearMidiList(self) -> None:
@@ -1861,4 +2237,8 @@ class AppController(QObject):
 
     @Slot()
     def shutdownDiscordPresence(self) -> None:
+        self._stopHubMidiPreview()
+        for worker in tuple(self._hub_preview_workers.values()):
+            if worker.isRunning():
+                worker.requestInterruption()
         self._discord_presence.shutdown()

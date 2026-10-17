@@ -17,6 +17,7 @@ playThread = None
 playbackSpeed = 1.0
 sustainActive = False
 midiOut = None
+previewMode = False
 
 log = mainFunctions.log
 
@@ -82,7 +83,7 @@ def parseMidi(message):
             midiOut.send(message)
 
 def playMidiOnce(midiFile):
-    global sustainActive
+    global sustainActive, activeNotes
     mid = mido.MidiFile(midiFile, clip=True)
     startTime = time.monotonic()
     currentTime = 0
@@ -91,7 +92,7 @@ def playMidiOnce(midiFile):
             return False
 
         adjustedDelay = msg.time / playbackSpeed
-        if configuration.configData["midiPlayer"]["randomFail"]["enabled"] and not msg.is_meta:
+        if not previewMode and configuration.configData["midiPlayer"]["randomFail"]["enabled"] and not msg.is_meta:
             if random.random() < configuration.configData["midiPlayer"]["randomFail"]["speed"] / 100:
                 adjustedDelay *= random.uniform(0.5, 1.5)
 
@@ -112,6 +113,15 @@ def playMidiOnce(midiFile):
                 time.sleep(min(remaining, 0.005))
 
         if msg.is_meta:
+            continue
+
+        if previewMode:
+            if midiOut:
+                midiOut.send(msg)
+            if msg.type == "note_on" and msg.velocity > 0:
+                activeNotes.add((msg.note, getattr(msg, "channel", 0)))
+            elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
+                activeNotes.discard((msg.note, getattr(msg, "channel", 0)))
             continue
 
         if hasattr(msg, "note"):
@@ -220,13 +230,15 @@ def clockThread(totalSeconds, updateCallback=None):
         else:
             time.sleep(0.1)
 
-def startPlayback(midiFile, outputDevice, updateCallback=None, totalSeconds=None):
-    global playThread, stopEvent, clockThreadRef, closeThread, paused, midiOut
+def startPlayback(midiFile, outputDevice, updateCallback=None, totalSeconds=None, preview=False):
+    global playThread, stopEvent, clockThreadRef, closeThread, paused, midiOut, previewMode, activeNotes
+    if playThread is not None and isinstance(playThread, threading.Thread) and playThread.is_alive():
+        return False
     stopEvent.clear()
     closeThread = False
     paused = False
-    if playThread is not None and isinstance(playThread, threading.Thread) and playThread.is_alive():
-        return
+    previewMode = bool(preview)
+    activeNotes.clear()
     midiOut = mido.open_output(outputDevice)
     duration = max(0.0, float(totalSeconds or 0.0))
     if duration > 0:
@@ -242,6 +254,7 @@ def startPlayback(midiFile, outputDevice, updateCallback=None, totalSeconds=None
         daemon=True,
     )
     playThread.start()
+    return True
 
 def pausePlayback():
     global paused, sustainActive
@@ -269,7 +282,7 @@ def changeSpeed(amount):
     log(f"Speed: {playbackSpeed * 100:.0f}%")
 
 def stopPlayback():
-    global closeThread, stopEvent, playThread, clockThreadRef, timerList, midiOut, activeNotes
+    global closeThread, stopEvent, playThread, clockThreadRef, timerList, midiOut, activeNotes, previewMode
     if stopEvent.is_set():
         return
     stopEvent.set()
@@ -292,6 +305,9 @@ def stopPlayback():
             pass
     if midiOut:
         try:
+            if previewMode:
+                for channel in range(16):
+                    midiOut.send(mido.Message("control_change", control=64, value=0, channel=channel))
             for note, channel in list(activeNotes):
                 midiOut.send(mido.Message("note_off", note=note, velocity=0, channel=channel))
             activeNotes.clear()
@@ -299,4 +315,5 @@ def stopPlayback():
         except:
             pass
         midiOut = None
+    previewMode = False
     log("Playback fully stopped.")
