@@ -21,10 +21,11 @@ pip install -r requirements.txt
 
 echo =^> Running PyInstaller to create .exe package...
 pyinstaller --onefile --noconfirm ^
+    --collect-all PySide6 ^
     --add-data="assets;assets" ^
     --paths="." ^
     --name="bootstrapper" ^
-    --icon=assets\icons\integrated\icon.ico ^
+    --icon=assets\branding\better-nanomidi\BetterNanoMidi.ico ^
     api\bootstrapper.py
 
 echo =^> Cleaning up temporary files...

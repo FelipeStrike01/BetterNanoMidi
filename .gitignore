@@ -1,8 +1,35 @@
-/base/
-/venv-win/
-/venv-mac/
-/venv-lnx/
+# Python
 __pycache__/
-/*.mid
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+venv-*/
+
+# Local configuration and logs
+.env
+.env.*
+!.env.example
+*.log
+
+# Build output
+/build/
+/dist/
+/build-portable/debugdist*/
+/build-portable/dist-*/
+/build-portable/work*/
+/build-portable/*-debug.spec
+/build-portable/nanoMIDIPlayer.spec
+/build-portable/debug-*.txt
+/build-portable/tools/upx-*/
+
+# Local design and editor files
+/.impeccable/
+/design-approval/
+/.vscode/
+/.idea/
+/temp_icon.ico
+
+# User MIDI files
 *.mid
-temp_icon.ico
+*.midi

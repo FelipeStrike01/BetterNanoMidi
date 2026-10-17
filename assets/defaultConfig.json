@@ -2,6 +2,9 @@
   "midiPlayer": {
     "currentFile": "",
     "midiList": [],
+    "playlist": [],
+    "playlists": [],
+    "activePlaylistId": "",
     "inputModule": "pynput",
     "loopSong": false,
     "releaseOnPause": true,
@@ -347,12 +350,17 @@
     "slowdown": "f5"
   },
   "appUI": {
+    "language": "en",
     "topmost": false,
     "console": true,
-    "forceTheme": true,
+    "forceTheme": false,
     "tooltip": true,
     "timestamp": true,
-    "checkForUpdates": true,
+    "checkForUpdates": false,
     "sendTelemetry": true
+  },
+  "discordPresence": {
+    "enabled": false,
+    "applicationId": "1561063229206302750"
   }
 }

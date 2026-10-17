@@ -7,6 +7,7 @@ from pynput import keyboard as pynputKeyboard
 
 from modules import configuration
 from modules.functions import mainFunctions
+from modules.midiHandler.windowsInputGuard import keyboardOutputAllowed
 
 selectedModule = "pynput"
 pressedKeys = set()
@@ -30,10 +31,16 @@ def logKeys(action, key):
 
 if selectedModule == "keyboard":
     def press(key):
+        if not keyboardOutputAllowed():
+            return
         keyboard.press(key)
+        heldKeys.add(key)
         logKeys("press", key)
     def release(key):
+        if key not in heldKeys:
+            return
         keyboard.release(key)
+        heldKeys.discard(key)
         logKeys("release", key)
 
 elif selectedModule == "pynput":
@@ -63,6 +70,8 @@ elif selectedModule == "pynput":
         return False
 
     def press(key):
+        if not keyboardOutputAllowed():
+            return
         keyObj = translateKey(key)
         if isBlockedKey(keyObj):
             return
@@ -73,6 +82,8 @@ elif selectedModule == "pynput":
     def release(key):
         keyObj = translateKey(key)
         if isBlockedKey(keyObj):
+            return
+        if keyObj not in heldKeys:
             return
         pynputController.release(keyObj)
         logKeys("release", keyObj)

@@ -1,6 +1,3 @@
-import customtkinter as ctk
-import tkinter as tk
-import tkinter.messagebox
 import textwrap
 import threading
 import time
@@ -15,7 +12,6 @@ import platform
 
 from pynput import keyboard as pynputKeyboard
 from modules import configuration
-from ui import customTheme
 from ui.midiPlayer import MidiPlayerTab
 from ui.drumsMacro import DrumsMacroTab
 from ui.midiToQWERTY import MidiToQwertyTab
@@ -120,12 +116,6 @@ def startGlobalListener():
         listener.daemon = True
         listener.start()
 
-class ScrollableFrame(ctk.CTkScrollableFrame):
-    def check_if_master_is_canvas(self, widget):
-        if isinstance(widget, tk.Widget):
-            return super().check_if_master_is_canvas(widget)
-        return False
-
 def registerApp(app):
     global appInstance
     appInstance = app
@@ -137,7 +127,7 @@ def resourcePath(relativePath):
     if hasattr(sys, '_MEIPASS'):
         basePath = sys._MEIPASS
     else:
-        basePath = os.path.abspath(".")
+        basePath = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     return os.path.join(basePath, relativePath)
 
 def logWorker():
@@ -174,88 +164,21 @@ def insertConsoleText(text, ignoreConsoleCheck=False, app=None):
 
     if not (ignoreConsoleCheck or configuration.configData['appUI']['console']):
         return
-
-    currentPage = getattr(app, "currentPage", 0) if app else 0
-    if currentPage == 1:
-        consoleLocation = DrumsMacroTab.consoleFrame
-    elif currentPage == 3:
-        consoleLocation = MidiToQwertyTab.consoleFrame
+    page = getattr(app, "currentPage", 0) if app else 0
+    wrapped = []
+    for line in str(text).split("\n"):
+        wrapped.extend(textwrap.wrap(line, width=72, break_long_words=True, break_on_hyphens=False) or [""])
+    message = "\n".join(wrapped)
+    if app and hasattr(app, "consoleRequested"):
+        app.consoleRequested.emit(page, message, bool(ignoreConsoleCheck))
     else:
-        consoleLocation = MidiPlayerTab.consoleFrame
-    
-    if app:
-        if currentPage == 1:
-            maxMessages = getattr(app, "maxDrumPlayerConsoleLog", 14)
-        elif currentPage == 3:
-            maxMessages = getattr(app, "maxMidiToQWERTYLog", 13)
-        else:
-            maxMessages = getattr(app, "maxMidiPlayerConsoleLog", 8)
-    else:
-        maxMessages = 15
-
-    if app and (not hasattr(app, "logLabels") or app.logLabels is None):
-        app.logLabels = []
-
-    wrappedLines = []
-    for line in text.split("\n"):
-        wrappedLines.extend(
-            textwrap.wrap(line, width=27, break_long_words=True, break_on_hyphens=False)
-        )
-    wrappedText = "\n".join(wrappedLines)
-
-    def createLabel():
-        logLabel = tk.Label(
-            consoleLocation,
-            text=wrappedText,
-            fg=customTheme.activeThemeData["Theme"]["MidiPlayer"]["TextColor"],
-            bg=customTheme.activeThemeData["Theme"]["MidiPlayer"]["ConsoleBackground"],
-            font=customTheme.globalFont12,
-            anchor="w",
-            justify="left",
-            wraplength=0,
-        )
-        logLabel.pack(anchor="sw", fill="x")
-
-        if app:
-            app.logLabels.append(logLabel)
-            if len(app.logLabels) > maxMessages:
-                oldLabel = app.logLabels.pop(0)
-                try:
-                    oldLabel.destroy()
-                except Exception as e:
-                    logger.error(f"destroy oldLabel error: {e}")
-
-        if len(consoleLocation.winfo_children()) > 20:
-            for widget in consoleLocation.winfo_children():
-                try:
-                    widget.destroy()
-                except Exception as e:
-                    logger.error(f"destroy widget error: {e}")
-
-        consoleLocation.update_idletasks()
-
-    consoleLocation.after(0, createLabel)
+        logger.info(message)
 
 def clearConsole(app=None):
     logger.debug("clearConsole")
     app = app or getApp()
-    currentPage = getattr(app, "currentPage", 0) if app else 0
-
-    if currentPage == 1:
-        consoleLocation = DrumsMacroTab.consoleFrame
-    elif currentPage == 3:
-        consoleLocation = MidiToQwertyTab.consoleFrame
-    else:
-        consoleLocation = MidiPlayerTab.consoleFrame
-
-    for widget in consoleLocation.winfo_children():
-        try:
-            widget.destroy()
-        except Exception as e:
-            logger.error(f"clearConsole destroy widget error: {e}")
-    if app and hasattr(app, "logLabels"):
-        app.logLabels.clear()
-    consoleLocation.update_idletasks()
+    if app and hasattr(app, "clearConsoleRequested"):
+        app.clearConsoleRequested.emit(getattr(app, "currentPage", 0))
 
 def tabBind(tab):
     logger.info(f"tabBind: {tab}")
@@ -342,7 +265,7 @@ def setHotkey(keyType):
             configuration.configData["hotkeys"][keyType] = oldHotkey
             configuration.configData.save()
             conflictAction = [k for k, v in currentHotkeys.items() if v == newHotkey][0]
-            tkinter.messagebox.showinfo(title="Keybind Conflict", message=f"This keybind is in use!\n{conflictAction}: {newHotkey}", icon='warning')
+            showMessage("Keybind Conflict", f"This keybind is already in use by {conflictAction}: {newHotkey}", "warning")
         else:
             for btn in buttons[keyType]:
                 btn.configure(text=newHotkey.upper(), state="normal")
@@ -360,6 +283,8 @@ def setHotkey(keyType):
             midiPlayerFunctions.bindControls()
         elif app.currentPage == 1:
             drumsMacroFunctions.bindControls()
+        if app and hasattr(app, "_refreshSnapshot"):
+            app._refreshSnapshot()
 
     def onKeyPressWindows(event):
         if hotkeyButtonActive:
@@ -462,3 +387,16 @@ def speedUpHotkeyCommand():
 def slowHotkeyCommand():
     logger.debug("slowHotkeyCommand")
     setHotkey('slowdown')
+
+def showMessage(title, message, kind="info"):
+    app = getApp()
+    if app and hasattr(app, "dialogRequested"):
+        app.dialogRequested.emit(str(title), str(message), str(kind))
+    else:
+        logger.info("%s: %s", title, message)
+
+def askYesNo(title, message):
+    app = getApp()
+    if app and hasattr(app, "askYesNo"):
+        return bool(app.askYesNo(str(title), str(message)))
+    return False

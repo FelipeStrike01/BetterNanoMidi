@@ -1,13 +1,12 @@
 import threading
 import json
-import customtkinter
 import os
 import platform
 import datetime
 import keyboard
 import logging
 
-from tkinter import filedialog
+from PySide6.QtWidgets import QFileDialog
 from mido import MidiFile
 from pynput import keyboard as pynputKeyboard
 
@@ -38,7 +37,12 @@ def selectFile():
         DrumsMacroTab.timelineIndicator.configure(text="0:00:00 / 0:00:00")
         DrumsMacroTab.playButton.configure(text="Play")
 
-        filePath = filedialog.askopenfilename(filetypes=[("MIDI files", "*.mid"), ("MIDI files", "*.midi")])
+        filePath, _selected_filter = QFileDialog.getOpenFileName(
+            None,
+            "Select MIDI file",
+            "",
+            "MIDI files (*.mid *.midi)",
+        )
         logger.debug(f"filePath selected: {filePath}")
         if filePath:
             currentVAL = list(DrumsMacroTab.midiPathDropdown.cget("values"))
@@ -259,6 +263,7 @@ def startPlayback():
                 DrumsMacroTab.timelineIndicator.after(0, lambda: DrumsMacroTab.timelineIndicator.configure(text=text))
 
             midiHandler.startPlayback(midiFile, updateCallback=updateTimeline)
+            app.setPlaybackPresence("playing", midiFile, "drums")
             logger.debug("midiHandler.startPlayback called")
     except Exception as e:
         logger.exception(f"startPlayback error: {e}")
@@ -292,6 +297,7 @@ def stopPlayback():
                 else f"X:XX:XX / {str(datetime.timedelta(seconds=int(totalTime)))}"
             )
             DrumsMacroTab.timelineIndicator.configure(text=timelineText)
+        app.setPlaybackPresence("stopped", "", "drums")
         logger.debug("stopPlayback completed")
     except Exception as e:
         logger.exception(f"stopPlayback error: {e}")
@@ -319,6 +325,8 @@ def pausePlayback():
                 fg_color=customTheme.activeThemeData["Theme"]["DrumsMacro"]["PlayingColor"],
                 hover_color=customTheme.activeThemeData["Theme"]["DrumsMacro"]["PlayingColorHover"]
             )
+        midiFile = DrumsMacroTab.midiPathDropdown.get()
+        app.setPlaybackPresence("paused" if paused else "playing", midiFile, "drums")
         logger.debug("pausePlayback state updated")
     except Exception as e:
         logger.exception(f"pausePlayback error: {e}")

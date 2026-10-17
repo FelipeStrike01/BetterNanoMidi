@@ -1,0 +1,34 @@
+{
+  "brand": "Better NanoMidi",
+  "tagline": "More music, less friction.",
+  "brief": "A polished MIDI playback app with a stronger identity, a broader music catalog, and a responsive interface.",
+  "adjectives": ["musical", "precise", "warm", "modern"],
+  "criteria": "A clear MIDI identity that remains recognizable at app-icon size and works on dark and light surfaces.",
+  "industry": "software",
+  "nav": ["Player", "MIDI Hub", "Settings"],
+  "brand_color": "#C47B5A",
+  "tile_color": "#1B1917",
+  "greyscale": false,
+  "final": true,
+  "label": "Piano roll",
+  "concepts": [
+    {
+      "name": "Piano roll",
+      "symbol": "symbol-on-light.svg",
+      "lockup": "logo-horizontal-on-light.svg",
+      "stacked": "logo-stacked-on-light.svg",
+      "avatar": "symbol-on-light.svg",
+      "symbol_on_tile": "symbol-on-dark.svg",
+      "stacked_on_tile": "logo-stacked-on-dark.svg",
+      "lockup_on_dark": "logo-horizontal-on-dark.svg",
+      "symbol_on_dark": "symbol-on-dark.svg",
+      "idea": "Three MIDI event bars turn the rhythm of a piano roll into a compact app mark, with terracotta highlighting the active note.",
+      "rationale": [
+        "The staggered bars connect directly to MIDI notes and timing.",
+        "A single warm accent gives the mark a clear focal point in both themes.",
+        "The symbol holds its shape as an app icon, while the outlined wordmark works without installed fonts."
+      ]
+    }
+  ],
+  "recommendation": "Use the dark app icon as the default Windows application tile. Keep the light mark for white surfaces and use the standalone symbol at small sizes."
+}

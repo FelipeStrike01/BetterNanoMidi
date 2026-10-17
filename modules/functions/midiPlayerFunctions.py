@@ -1,13 +1,12 @@
 import threading
 import json
-import customtkinter
 import os
 import platform
 import datetime
 import keyboard
 import logging
 
-from tkinter import filedialog
+from PySide6.QtWidgets import QFileDialog
 from mido import MidiFile
 from pynput import keyboard as pynputKeyboard
 from modules import configuration
@@ -17,6 +16,7 @@ from ui.settings import SettingsTab
 from ui import customTheme
 from modules.functions import mainFunctions
 from modules.midiHandler import useOutput
+from ui.qt_compat import CompatVar
 
 logger = logging.getLogger(__name__)
 osName = platform.system()
@@ -30,11 +30,18 @@ elif osName == "Linux":
 
 app = mainFunctions.getApp()
 
-switchUseMIDIvar = customtkinter.StringVar(value="off")
-switchSustainvar = customtkinter.StringVar(value="off")
-switchNoDoublesvar = customtkinter.StringVar(value="off")
-switchVelocityvar = customtkinter.StringVar(value="off")
-switch88Keysvar = customtkinter.StringVar(value="off")
+switchUseMIDIvar = CompatVar("off")
+switchSustainvar = CompatVar("off")
+switchNoDoublesvar = CompatVar("off")
+switchVelocityvar = CompatVar("off")
+switch88Keysvar = CompatVar("off")
+currentMidiDuration = 0.0
+
+def isPlaylistPlaybackActive():
+    return bool(app and getattr(app, "playlistActive", False))
+
+def shouldLoopCurrentMidi():
+    return bool(configuration.configData["midiPlayer"].get("loopSong", False)) and not isPlaylistPlaybackActive()
 
 switchUseMIDIvar.set("on" if configuration.configData.get('midiPlayer', {}).get('useMIDIOutput', False) else "off")
 switchSustainvar.set("on" if configuration.configData.get('midiPlayer', {}).get('sustain', False) else "off")
@@ -91,6 +98,9 @@ def switch88Keys():
 
 def selectFile():
     logger.info("selectFile called")
+    if app is not None and hasattr(app, "selectMidiFile"):
+        app.selectMidiFile("")
+        return
     try:
         MidiPlayerTab.filePathEntry.set("")
         unbindControls()
@@ -98,7 +108,12 @@ def selectFile():
         MidiPlayerTab.timelineIndicator.configure(text="0:00:00 / 0:00:00")
         MidiPlayerTab.playButton.configure(text="Play")
 
-        filePath = filedialog.askopenfilename(filetypes=[("MIDI files", "*.mid"), ("MIDI files", "*.midi")])
+        filePath, _selected_filter = QFileDialog.getOpenFileName(
+            None,
+            "Select MIDI file",
+            "",
+            "MIDI files (*.mid *.midi)",
+        )
         logger.debug(f"filePath selected: {filePath}")
         if filePath:
             currentVAL = list(MidiPlayerTab.filePathEntry.cget("values"))
@@ -110,6 +125,7 @@ def selectFile():
             midiFile = MidiFile(filePath, clip=True)
 
             time = midiFile.length
+            setMidiDuration(time)
             timelineText = (
                 f"0:00:00 / {str(datetime.timedelta(seconds=int(time)))}"
                 if configuration.configData['appUI']['timestamp']
@@ -130,6 +146,7 @@ def selectFile():
         logger.exception(f"selectFile error: {e}")
 
 def loadSavedFile():
+    global currentMidiDuration
     logger.info("loadSavedFile called")
     try:
         midiList = configuration.configData['midiPlayer'].get('midiList', [])
@@ -165,11 +182,9 @@ def loadSavedFile():
                 entryValues.append(currentFile)
                 MidiPlayerTab.filePathEntry.configure(values=entryValues)
             MidiPlayerTab.filePathEntry.set(currentFile)
-            midiFileData = MidiFile(currentFile, clip=True)
-            totalTime = midiFileData.length
-            timelineText = f"0:00:00 / {str(datetime.timedelta(seconds=int(totalTime)))}" if configuration.configData['appUI']['timestamp'] else f"X:XX:XX / {str(datetime.timedelta(seconds=int(totalTime)))}"
-            MidiPlayerTab.timelineIndicator.configure(text=timelineText)
-            logger.debug(f"loaded currentFile: {currentFile}")
+            currentMidiDuration = 0.0
+            MidiPlayerTab.timelineIndicator.configure(text="Loading MIDI…")
+            logger.debug(f"queued currentFile for background loading: {currentFile}")
             return
         
         if midiList:
@@ -177,13 +192,12 @@ def loadSavedFile():
             MidiPlayerTab.filePathEntry.set(firstFile)
             configuration.configData['midiPlayer']['currentFile'] = firstFile
             configuration.configData.save()
-            midiFileData = MidiFile(firstFile, clip=True)
-            totalTime = midiFileData.length
-            timelineText = f"0:00:00 / {str(datetime.timedelta(seconds=int(totalTime)))}" if configuration.configData['appUI']['timestamp'] else f"X:XX:XX / {str(datetime.timedelta(seconds=int(totalTime)))}"
-            MidiPlayerTab.timelineIndicator.configure(text=timelineText)
-            logger.debug(f"loaded firstFile: {firstFile}")
+            currentMidiDuration = 0.0
+            MidiPlayerTab.timelineIndicator.configure(text="Loading MIDI…")
+            logger.debug(f"queued first saved file for background loading: {firstFile}")
             return
         
+        currentMidiDuration = 0.0
         MidiPlayerTab.filePathEntry.set("None")
         MidiPlayerTab.timelineIndicator.configure(text="0:00:00 / 0:00:00")
         logger.debug("no saved files found")
@@ -191,6 +205,7 @@ def loadSavedFile():
         logger.exception(f"loadSavedFile error: {e}")
 
 def switchMidiEvent(event=None):
+    global currentMidiDuration
     logger.info("switchMidiEvent called")
     try:
         midiFile = MidiPlayerTab.filePathEntry.get()
@@ -199,12 +214,20 @@ def switchMidiEvent(event=None):
 
         midiFileData = MidiFile(midiFile, clip=True)
         totalTime = midiFileData.length
+        setMidiDuration(totalTime)
         timelineText = f"0:00:00 / {str(datetime.timedelta(seconds=int(totalTime)))}" if configuration.configData['appUI']['timestamp'] else f"X:XX:XX / {str(datetime.timedelta(seconds=int(totalTime)))}"
         MidiPlayerTab.timelineIndicator.configure(text=timelineText)
         bindControls()
         logger.debug(f"switched midi file to: {midiFile}")
     except Exception as e:
         logger.exception(f"switchMidiEvent error: {e}")
+
+def setMidiDuration(duration):
+    global currentMidiDuration
+    try:
+        currentMidiDuration = max(0.0, float(duration))
+    except (TypeError, ValueError):
+        currentMidiDuration = 0.0
 
 def bindControls():
     try:
@@ -270,6 +293,9 @@ def startPlayback():
             threading.Thread(target=mainFunctions.insertConsoleText, args=("MIDI File does not exist.", True)).start()
             return
 
+        if app and not app.isRunning and hasattr(app, "prepareMidiPlaylistPlayback"):
+            app.prepareMidiPlaylistPlayback(midiFile)
+
         useMIDI = configuration.configData["midiPlayer"]['useMIDIOutput']
 
         if useMIDI:
@@ -290,7 +316,13 @@ def startPlayback():
             def updateTimeline(text):
                 MidiPlayerTab.timelineIndicator.after(0, lambda: MidiPlayerTab.timelineIndicator.configure(text=text))
 
-            useOutput.startPlayback(midiFile, outputDevice, updateCallback=updateTimeline)
+            useOutput.startPlayback(
+                midiFile,
+                outputDevice,
+                updateCallback=updateTimeline,
+                totalSeconds=currentMidiDuration,
+            )
+            app.setPlaybackPresence("playing", midiFile, "midi")
             logger.debug("useOutput.startPlayback called")
 
         elif app and not app.isRunning:
@@ -305,14 +337,24 @@ def startPlayback():
             def updateTimeline(text):
                 MidiPlayerTab.timelineIndicator.after(0, lambda: MidiPlayerTab.timelineIndicator.configure(text=text))
 
-            midiHandler.startPlayback(midiFile, updateCallback=updateTimeline)
+            midiHandler.startPlayback(
+                midiFile,
+                updateCallback=updateTimeline,
+                totalSeconds=currentMidiDuration,
+            )
+            app.setPlaybackPresence("playing", midiFile, "midi")
             logger.debug("midiHandler.startPlayback called")
     except Exception as e:
         logger.exception(f"startPlayback error: {e}")
 
-def stopPlayback():
+def stopPlayback(natural=False, cancelPlaylist=None):
     logger.info("stopPlayback called")
     try:
+        if cancelPlaylist is None:
+            cancelPlaylist = not natural
+        if cancelPlaylist and app and hasattr(app, "cancelMidiPlaylist"):
+            app.cancelMidiPlaylist()
+
         if not app.isRunning:
             return
 
@@ -337,16 +379,17 @@ def stopPlayback():
             hover_color=customTheme.activeThemeData["Theme"]["MidiPlayer"]["PlayColorHover"]
         )
 
-        midiFile = MidiPlayerTab.filePathEntry.get()
-        if os.path.exists(midiFile):
-            midiFileData = MidiFile(midiFile, clip=True)
-            totalTime = midiFileData.length
+        totalTime = currentMidiDuration
+        if totalTime > 0:
             timelineText = (
                 f"0:00:00 / {str(datetime.timedelta(seconds=int(totalTime)))}"
                 if configuration.configData['appUI']['timestamp']
                 else f"X:XX:XX / {str(datetime.timedelta(seconds=int(totalTime)))}"
             )
             MidiPlayerTab.timelineIndicator.configure(text=timelineText)
+        app.setPlaybackPresence("stopped", "", "midi")
+        if natural and hasattr(app, "midiPlaylistPlaybackFinished"):
+            app.midiPlaylistPlaybackFinished.emit()
         logger.debug("stopPlayback completed")
     except Exception as e:
         logger.exception(f"stopPlayback error: {e}")
@@ -381,6 +424,8 @@ def pausePlayback():
                 fg_color=customTheme.activeThemeData["Theme"]["MidiPlayer"]["PlayingColor"],
                 hover_color=customTheme.activeThemeData["Theme"]["MidiPlayer"]["PlayingColorHover"]
             )
+        midiFile = MidiPlayerTab.filePathEntry.get()
+        app.setPlaybackPresence("paused" if paused else "playing", midiFile, "midi")
         logger.debug("pausePlayback state updated")
     except Exception as e:
         logger.exception(f"pausePlayback error: {e}")

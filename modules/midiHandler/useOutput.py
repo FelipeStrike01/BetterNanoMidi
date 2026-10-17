@@ -156,22 +156,44 @@ def playMidiOnce(midiFile):
 
     return True
 
-def playMidiFile(midiFile):
+def playMidiFile(midiFile, updateCallback=None, totalSeconds=None):
+    global clockThreadRef
     log("nanoMIDI Direct MIDI Out v1.0")
     log(f"Playing MIDI file: {midiFile}")
+    try:
+        from modules.functions.midiPlayerFunctions import shouldLoopCurrentMidi
 
-    while not (stopEvent.is_set() or closeThread):
-        finished = playMidiOnce(midiFile)
-
+        loop_song = shouldLoopCurrentMidi()
+        natural_completion = False
+        if totalSeconds is None or totalSeconds <= 0:
+            totalSeconds = mido.MidiFile(midiFile, clip=True).length
         if stopEvent.is_set() or closeThread:
-            break
+            return
+        if clockThreadRef is None or not clockThreadRef.is_alive():
+            clockThreadRef = threading.Thread(
+                target=clockThread,
+                args=(totalSeconds, updateCallback),
+                daemon=True,
+            )
+            clockThreadRef.start()
 
-        if not finished:
-            break
+        while not (stopEvent.is_set() or closeThread):
+            finished = playMidiOnce(midiFile)
 
-        if not configuration.configData["midiPlayer"]["loopSong"]:
+            if stopEvent.is_set() or closeThread or not finished:
+                break
+
+            if not loop_song:
+                natural_completion = True
+                break
+
+        if natural_completion:
             from modules.functions.midiPlayerFunctions import stopPlayback
-            stopPlayback()
+            stopPlayback(natural=True)
+    except Exception as error:
+        log(f"MIDI playback stopped: {error}")
+        from modules.functions.midiPlayerFunctions import stopPlayback
+        stopPlayback()
 
 def formatTime(seconds):
     hours = int(seconds // 3600)
@@ -198,7 +220,7 @@ def clockThread(totalSeconds, updateCallback=None):
         else:
             time.sleep(0.1)
 
-def startPlayback(midiFile, outputDevice, updateCallback=None):
+def startPlayback(midiFile, outputDevice, updateCallback=None, totalSeconds=None):
     global playThread, stopEvent, clockThreadRef, closeThread, paused, midiOut
     stopEvent.clear()
     closeThread = False
@@ -206,10 +228,19 @@ def startPlayback(midiFile, outputDevice, updateCallback=None):
     if playThread is not None and isinstance(playThread, threading.Thread) and playThread.is_alive():
         return
     midiOut = mido.open_output(outputDevice)
-    totalSeconds = mido.MidiFile(midiFile, clip=True).length
-    playThread = threading.Thread(target=playMidiFile, args=(midiFile,), daemon=True)
-    clockThreadRef = threading.Thread(target=clockThread, args=(totalSeconds, updateCallback), daemon=True)
-    clockThreadRef.start()
+    duration = max(0.0, float(totalSeconds or 0.0))
+    if duration > 0:
+        clockThreadRef = threading.Thread(
+            target=clockThread,
+            args=(duration, updateCallback),
+            daemon=True,
+        )
+        clockThreadRef.start()
+    playThread = threading.Thread(
+        target=playMidiFile,
+        args=(midiFile, updateCallback, duration),
+        daemon=True,
+    )
     playThread.start()
 
 def pausePlayback():

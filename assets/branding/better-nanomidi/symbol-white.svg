@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title">
+<title id="title">Better NanoMidi Piano Roll symbol, white one-colour</title>
+<g id="symbol" transform="translate(0 0) scale(1)">
+<rect x="32" y="44" width="112" height="38" rx="4" fill="#FFFFFF"/>
+<rect x="88" y="109" width="136" height="38" rx="4" fill="#FFFFFF"/>
+<rect x="48" y="174" width="124" height="38" rx="4" fill="#FFFFFF"/>
+</g>
+</svg>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="title">
+<title id="title">Better NanoMidi app icon, dark theme</title>
+<rect x="0" y="0" width="512" height="512" rx="112" fill="#1B1917"/>
+<g id="symbol" transform="translate(38 38) scale(1.7)">
+<rect x="32" y="44" width="112" height="38" rx="4" fill="#E9E1D8"/>
+<rect x="88" y="109" width="136" height="38" rx="4" fill="#C47B5A"/>
+<rect x="48" y="174" width="124" height="38" rx="4" fill="#E9E1D8"/>
+</g>
+</svg>

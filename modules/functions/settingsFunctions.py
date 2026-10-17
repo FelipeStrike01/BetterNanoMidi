@@ -1,4 +1,3 @@
-import customtkinter
 import json
 import ctypes
 import sys
@@ -10,15 +9,16 @@ from ui.midiPlayer import MidiPlayerTab
 from ui.drumsMacro import DrumsMacroTab
 from ui.midiToQWERTY import MidiToQwertyTab
 from ui import customTheme
+from ui.qt_compat import CompatVar
 
 logger = logging.getLogger(__name__)
 
-switchTopMostvar = customtkinter.StringVar(value="off")
-switchConsolevar = customtkinter.StringVar(value="off")
-switchToolTipvar = customtkinter.StringVar(value="off")
-switchTimestampvar = customtkinter.StringVar(value="off")
-switchCheckForUpdatesvar = customtkinter.StringVar(value="off")
-switchForceThemevar = customtkinter.StringVar(value="off")
+switchTopMostvar = CompatVar("off")
+switchConsolevar = CompatVar("off")
+switchToolTipvar = CompatVar("off")
+switchTimestampvar = CompatVar("off")
+switchCheckForUpdatesvar = CompatVar("off")
+switchForceThemevar = CompatVar("off")
 
 try:
     switchTopMostvar.set("on" if configuration.configData.get('appUI', {}).get('topmost', False) else "off")
@@ -91,10 +91,10 @@ def switchForceTheme():
     except Exception as e:
         logger.exception("Error in switchForceTheme")
 
-switchMidiCustomHoldLengthvar = customtkinter.StringVar(value="off")
-switchMidiRandomFailvar = customtkinter.StringVar(value="off")
-switchMidiLoopSongvar = customtkinter.StringVar(value="off")
-switchMidiReleaseOnPausevar = customtkinter.StringVar(value="off")
+switchMidiCustomHoldLengthvar = CompatVar("off")
+switchMidiRandomFailvar = CompatVar("off")
+switchMidiLoopSongvar = CompatVar("off")
+switchMidiReleaseOnPausevar = CompatVar("off")
 
 try:
     switchMidiCustomHoldLengthvar.set("on" if configuration.configData.get('midiPlayer', {}).get('customHoldLength', {}).get('enabled', False) else "off")
@@ -160,16 +160,16 @@ def midiClearMidiList():
     except Exception as e:
         logger.exception("Error in midiClearMidiList")
 
-switchDrumsLoopSongvar = customtkinter.StringVar(value="off")
-switchDrumsReleaseOnPausevar = customtkinter.StringVar(value="off")
-switchDrumsCustomHoldLengthvar = customtkinter.StringVar(value="off")
-switchDrumsRandomFailvar = customtkinter.StringVar(value="off")
+switchDrumsLoopSongvar = CompatVar("off")
+switchDrumsReleaseOnPausevar = CompatVar("off")
+switchDrumsCustomHoldLengthvar = CompatVar("off")
+switchDrumsRandomFailvar = CompatVar("off")
 
 try:
     switchDrumsLoopSongvar.set("on" if configuration.configData.get('drumsMacro', {}).get('loopSong', {}) else "off")
     switchDrumsReleaseOnPausevar.set("on" if configuration.configData.get('drumsMacro', {}).get('releaseOnPause', {}) else "off")
     switchDrumsCustomHoldLengthvar.set("on" if configuration.configData.get('drumsMacro', {}).get('customHoldLength', {}).get('enabled', False) else "off")
-    switchDrumsRandomFailvar.set("on" if configuration.configData.get('midiPlayer', {}).get('randomFail', {}).get('enabled', False) else "off")
+    switchDrumsRandomFailvar.set("on" if configuration.configData.get('drumsMacro', {}).get('randomFail', {}).get('enabled', False) else "off")
 except Exception as e:
     logger.exception("Error setting drums switch states")
 

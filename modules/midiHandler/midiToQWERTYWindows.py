@@ -6,6 +6,7 @@ import threading
 from pynput import keyboard as pynputKeyboard
 from modules.functions import mainFunctions
 from modules import configuration
+from modules.midiHandler.windowsInputGuard import keyboardOutputAllowed
 
 pressedKeys = set()
 heldKeys = set()
@@ -39,10 +40,16 @@ specialKeyMap = {
 
 if configuration.configData["midiToQwerty"]["inputModule"] == "keyboard":
     def press(key):
+        if not keyboardOutputAllowed():
+            return
         keyboard.press(key)
+        heldKeys.add(key)
         logKeys("press", key)
     def release(key):
+        if key not in heldKeys:
+            return
         keyboard.release(key)
+        heldKeys.discard(key)
         logKeys("release", key)
 
 elif configuration.configData["midiToQwerty"]["inputModule"] == "pynput":
@@ -74,6 +81,8 @@ elif configuration.configData["midiToQwerty"]["inputModule"] == "pynput":
         return False
 
     def press(key):
+        if not keyboardOutputAllowed():
+            return
         keyObj = translateKey(key)
         if isBlockedKey(keyObj):
             return
@@ -84,6 +93,8 @@ elif configuration.configData["midiToQwerty"]["inputModule"] == "pynput":
     def release(key):
         keyObj = translateKey(key)
         if isBlockedKey(keyObj):
+            return
+        if keyObj not in heldKeys:
             return
         pynputController.release(keyObj)
         logKeys("release", keyObj)

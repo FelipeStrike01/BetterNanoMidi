@@ -136,6 +136,9 @@ def pressAndMaybeRelease(key):
         t = threading.Timer(configuration.configData["midiPlayer"]["customHoldLength"]["noteLength"], _timerRelease)
         timerList.append(t)
         t.start()
+
+def simulateKey(msgType, note, velocity):
+    note = note + configuration.configData["midiPlayer"].get("pitchOffset", 0) + configuration.configData["midiPlayer"].get("transposeOffset", 0)
     allow88 = configuration.configData["midiPlayer"]["88Keys"]
 
     letterNoteMap = configuration.configData["midiPlayer"]["pianoMap"]["61keyMap"]
@@ -201,6 +204,10 @@ def pressAndMaybeRelease(key):
         else:
             release(key.lower())
         heldNoteCount = max(0, heldNoteCount - 1)
+
+def parseMidi(message):
+    global sustainActive
+    if message.type == "control_change" and configuration.configData["midiPlayer"]["sustain"]:
         if not sustainActive and message.value > configuration.configData["midiPlayer"]["sustainCutoff"]:
             sustainActive = True
             press("space")
@@ -312,16 +319,23 @@ def playMidiOnce(midiFile):
 def playMidiFile(midiFile):
     log("nanoMIDI Mid2VK Translator v3.0")
     log(f"Playing MIDI file: {midiFile}")
+    from modules.functions.midiPlayerFunctions import shouldLoopCurrentMidi
+
+    loop_song = shouldLoopCurrentMidi()
+    natural_completion = False
     while not (stopEvent.is_set() or closeThread):
         finished = playMidiOnce(midiFile)
-        if not configuration.configData["midiPlayer"]["loopSong"] or not finished or stopEvent.is_set() or closeThread:
+        if not loop_song or not finished or stopEvent.is_set() or closeThread:
+            natural_completion = bool(
+                not loop_song and finished and not stopEvent.is_set() and not closeThread
+            )
             break
         for key in list(heldKeys):
             release(key)
 
-    if not configuration.configData["midiPlayer"]["loopSong"]:
+    if not loop_song:
         from modules.functions.midiPlayerFunctions import stopPlayback
-        stopPlayback()
+        stopPlayback(natural=natural_completion)
 
 def formatTime(seconds):
     hours = int(seconds // 3600)

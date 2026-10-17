@@ -9,6 +9,7 @@ import random
 from pynput import keyboard as pynputKeyboard
 from modules.functions import mainFunctions
 from modules import configuration
+from modules.midiHandler.windowsInputGuard import keyboardOutputAllowed
 
 pressedKeys = set()
 heldKeys = set()
@@ -39,10 +40,16 @@ specialKeyMap = {
 
 if configuration.configData["midiPlayer"]["inputModule"] == "keyboard":
     def press(key):
+        if not keyboardOutputAllowed():
+            return
         keyboard.press(key)
+        heldKeys.add(key)
         logKeys("press", key)
     def release(key):
+        if key not in heldKeys:
+            return
         keyboard.release(key)
+        heldKeys.discard(key)
         logKeys("release", key)
 
 elif configuration.configData["midiPlayer"]["inputModule"] == "pynput":
@@ -74,6 +81,8 @@ elif configuration.configData["midiPlayer"]["inputModule"] == "pynput":
         return False
 
     def press(key):
+        if not keyboardOutputAllowed():
+            return
         keyObj = translateKey(key)
         if isBlockedKey(keyObj):
             return
@@ -84,6 +93,8 @@ elif configuration.configData["midiPlayer"]["inputModule"] == "pynput":
     def release(key):
         keyObj = translateKey(key)
         if isBlockedKey(keyObj):
+            return
+        if keyObj not in heldKeys:
             return
         pynputController.release(keyObj)
         logKeys("release", keyObj)
@@ -313,17 +324,42 @@ def playMidiOnce(midiFile):
     
     return True
 
-def playMidiFile(midiFile):
+def playMidiFile(midiFile, updateCallback=None, totalSeconds=None):
+    global clockThreadRef
     log("nanoMIDI Mid2VK Translator v3.0")
     log(f"Playing MIDI file: {midiFile}")
-    while not (stopEvent.is_set() or closeThread):
-        finished = playMidiOnce(midiFile)
-        if not configuration.configData["midiPlayer"]["loopSong"] or not finished or stopEvent.is_set() or closeThread:
-            break
-        for key in list(heldKeys):
-            release(key)
+    try:
+        from modules.functions.midiPlayerFunctions import shouldLoopCurrentMidi
 
-    if not configuration.configData["midiPlayer"]["loopSong"]:
+        loop_song = shouldLoopCurrentMidi()
+        natural_completion = False
+        if totalSeconds is None or totalSeconds <= 0:
+            totalSeconds = mido.MidiFile(midiFile, clip=True).length
+        if stopEvent.is_set() or closeThread:
+            return
+        if clockThreadRef is None or not clockThreadRef.is_alive():
+            clockThreadRef = threading.Thread(
+                target=clockThread,
+                args=(totalSeconds, updateCallback),
+                daemon=True,
+            )
+            clockThreadRef.start()
+
+        while not (stopEvent.is_set() or closeThread):
+            finished = playMidiOnce(midiFile)
+            if not loop_song or not finished or stopEvent.is_set() or closeThread:
+                natural_completion = bool(
+                    not loop_song and finished and not stopEvent.is_set() and not closeThread
+                )
+                break
+            for key in list(heldKeys):
+                release(key)
+
+        if not loop_song:
+            from modules.functions.midiPlayerFunctions import stopPlayback
+            stopPlayback(natural=natural_completion)
+    except Exception as error:
+        log(f"MIDI playback stopped: {error}")
         from modules.functions.midiPlayerFunctions import stopPlayback
         stopPlayback()
 
@@ -354,17 +390,26 @@ def clockThread(totalSeconds, updateCallback=None):
             time.sleep(0.1)
 
 
-def startPlayback(midiFile, updateCallback=None):
+def startPlayback(midiFile, updateCallback=None, totalSeconds=None):
     global playThread, stopEvent, clockThreadRef, closeThread, paused
     stopEvent.clear()
     closeThread = False
     paused = False
     if playThread is not None and isinstance(playThread, threading.Thread) and playThread.is_alive():
         return
-    totalSeconds = mido.MidiFile(midiFile, clip=True).length
-    playThread = threading.Thread(target=playMidiFile, args=(midiFile,), daemon=True)
-    clockThreadRef = threading.Thread(target=clockThread, args=(totalSeconds, updateCallback), daemon=True)
-    clockThreadRef.start()
+    duration = max(0.0, float(totalSeconds or 0.0))
+    if duration > 0:
+        clockThreadRef = threading.Thread(
+            target=clockThread,
+            args=(duration, updateCallback),
+            daemon=True,
+        )
+        clockThreadRef.start()
+    playThread = threading.Thread(
+        target=playMidiFile,
+        args=(midiFile, updateCallback, duration),
+        daemon=True,
+    )
     playThread.start()
 
 def pausePlayback():

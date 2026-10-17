@@ -1,5 +1,4 @@
 import json
-import customtkinter
 import platform
 import threading
 import logging
@@ -7,6 +6,7 @@ import logging
 from modules import configuration
 from modules.functions import mainFunctions
 from ui import customTheme
+from ui.qt_compat import CompatVar
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -22,11 +22,11 @@ elif osName == "Linux":
     
 app = mainFunctions.getApp()
 
-switchSustainvar = customtkinter.StringVar(value="off")
-switchNoDoublesvar = customtkinter.StringVar(value="off")
-switchVelocityvar = customtkinter.StringVar(value="off")
-switch88Keysvar = customtkinter.StringVar(value="off")
-switchCustomHoldLengthvar = customtkinter.StringVar(value="off")
+switchSustainvar = CompatVar("off")
+switchNoDoublesvar = CompatVar("off")
+switchVelocityvar = CompatVar("off")
+switch88Keysvar = CompatVar("off")
+switchCustomHoldLengthvar = CompatVar("off")
 
 switchSustainvar.set("on" if configuration.configData.get('midiToQwerty', {}).get('sustain', False) else "off")
 switchNoDoublesvar.set("on" if configuration.configData.get('midiToQwerty', {}).get('noDoubles', False) else "off")

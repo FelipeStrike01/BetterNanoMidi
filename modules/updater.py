@@ -1,71 +1,103 @@
-import requests
-import threading
-import webbrowser
+"""Update checks with prompts routed through the live Qt application."""
+
+from __future__ import annotations
+
 import os
 import subprocess
 import tempfile
-import tkinter.messagebox as messagebox
+import threading
+import webbrowser
 
-def checkForUpdates(appVersion):
+import requests
+
+from modules.functions import mainFunctions
+from modules.app_info import GITHUB_REPOSITORY
+
+
+VERSION_URL = (
+    f"https://raw.githubusercontent.com/{GITHUB_REPOSITORY}/refs/heads/main/api/version.json"
+    if GITHUB_REPOSITORY else ""
+)
+BOOTSTRAPPER_URL = (
+    f"https://github.com/{GITHUB_REPOSITORY}/raw/refs/heads/main/api/bootstrapper.exe"
+    if GITHUB_REPOSITORY else ""
+)
+RELEASES_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest" if GITHUB_REPOSITORY else ""
+
+
+def checkForUpdates(appVersion: str) -> tuple[str, str]:
+    if not VERSION_URL:
+        return "none", ""
+
     try:
-        response = requests.get("https://raw.githubusercontent.com/NotHammer043/nanoMIDIPlayer/refs/heads/main/api/version.json")
+        response = requests.get(VERSION_URL, timeout=8)
         response.raise_for_status()
-        versionInfo = response.json()
-
-        latestVersions = versionInfo.get("latest", [])
-        avoidVersions = versionInfo.get("avoid", [])
-        alertMessage = versionInfo.get("alertMessage", "")
-
-        if appVersion in avoidVersions:
-            return "urgent", alertMessage
-        elif appVersion not in latestVersions:
+        version_info = response.json()
+        latest_versions = version_info.get("latest", [])
+        avoid_versions = version_info.get("avoid", [])
+        alert_message = version_info.get("alertMessage", "")
+        if appVersion in avoid_versions:
+            return "urgent", alert_message
+        if appVersion not in latest_versions:
             return "update", ""
-    except requests.RequestException as e:
-        print(e)
-
+    except requests.RequestException:
+        pass
     return "none", ""
 
 
-def downloadBootstrapper():
-    url = "https://github.com/NotHammer043/nanoMIDIPlayer/raw/refs/heads/main/api/bootstrapper.exe"
-
-    folderPath = tempfile.gettempdir()
-    filePath = os.path.join(folderPath, "bootstrapper.exe")
-
-    threading.Thread(
-        target=messagebox.showinfo,
-        args=("Downloading Bootstrapper", "If there's an issue downloading, try disabling your antivirus.")
-    ).start()
-
-    def download(url, filePath):
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-
-        with open(filePath, 'wb') as file:
-            for chunk in response.iter_content(chunk_size=8192):
-                file.write(chunk)
-
-    try:
-        download(url, filePath)
-        print(f"Downloaded {filePath}")
-        messagebox.showinfo("Download Complete", "Click OK to start updater.")
-        subprocess.Popen(filePath, creationflags=subprocess.CREATE_NEW_CONSOLE)
-        os._exit(1)
-    except Exception as e:
-        messagebox.showerror("Error", f"An error occurred while downloading:\n{e}")
-
-
-def runUpdater(appVersion):
-    updateStatus, urgentMessage = checkForUpdates(appVersion)
-
-    if updateStatus == "urgent":
-        messagebox.showwarning("Critical Update Required", urgentMessage)
-        webbrowser.open("https://github.com/NotHammer043/nanoMIDIPlayer/releases/latest")
-
-    elif updateStatus == "update":
-        result = messagebox.askyesno(
-            "Update Available",
-            "A new version of nanoMIDIPlayer is available.\n\nWould you like to update now?"
+def _downloadBootstrapper() -> None:
+    if not BOOTSTRAPPER_URL:
+        mainFunctions.showMessage(
+            "Updater unavailable",
+            "The Better NanoMidi release repository has not been configured yet.",
+            "warning",
         )
-        if result:
-            threading.Thread(target=downloadBootstrapper).start()
+        return
+
+    file_path = os.path.join(tempfile.gettempdir(), "BetterNanoMidi-bootstrapper.exe")
+    try:
+        mainFunctions.showMessage(
+            "Downloading updater",
+            "Downloading the updater. If Windows blocks it, check your antivirus quarantine.",
+            "info",
+        )
+        response = requests.get(BOOTSTRAPPER_URL, timeout=30)
+        response.raise_for_status()
+        with open(file_path, "wb") as file:
+            file.write(response.content)
+        mainFunctions.showMessage("Download complete", "The updater will start now.", "info")
+        subprocess.Popen(file_path, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        os._exit(0)
+    except Exception as exc:
+        mainFunctions.showMessage("Update failed", f"Couldn't download or start the updater: {exc}", "error")
+
+
+def downloadBootstrapper() -> None:
+    threading.Thread(target=_downloadBootstrapper, name="updater-download", daemon=True).start()
+
+
+def runUpdater(appVersion: str) -> None:
+    update_status, urgent_message = checkForUpdates(appVersion)
+    if update_status == "urgent":
+        mainFunctions.showMessage("Critical update required", urgent_message, "warning")
+        if RELEASES_URL:
+            webbrowser.open(RELEASES_URL)
+    elif update_status == "update":
+        app = mainFunctions.getApp()
+        if app and hasattr(app, "confirmRequested"):
+            response: list[bool] = []
+            finished = threading.Event()
+
+            def resolve(accepted: bool) -> None:
+                response.append(bool(accepted))
+                finished.set()
+
+            app.confirmRequested.emit(
+                "Update available",
+                "A new version of nanoMIDIPlayer is available. Would you like to update now?",
+                resolve,
+            )
+            if finished.wait(300) and response and response[0]:
+                downloadBootstrapper()
+        elif mainFunctions.askYesNo("Update available", "A new version is available. Update now?"):
+            downloadBootstrapper()

@@ -1,364 +1,708 @@
-import os
+"""Network and list operations for MIDI Hub, independent from the UI toolkit."""
+
+from __future__ import annotations
+
+import hashlib
 import json
+import os
+import queue
 import threading
-import platform
-import datetime
+import time
+from pathlib import Path
+from urllib.parse import quote, urljoin, urlparse
+
 import requests
-import concurrent.futures
-import customtkinter as ctk
-import textwrap
-import logging
-from PIL import Image
-from mido import MidiFile
+
 from modules import configuration
-from ui import customTheme
 from modules.functions import mainFunctions
+from ui.midiHub import MidiHubTab
+from ui.midiPlayer import MidiPlayerTab
 
-logger = logging.getLogger(__name__)
-
-osName = platform.system()
-
-documentsDir = os.path.join(os.path.expanduser("~"), "Documents")
-baseDirectory = os.path.join(documentsDir, "nanoMIDIPlayer")
-os.makedirs(baseDirectory, exist_ok=True)
 
 midiDataUrl = "https://api.nanomidi.net/api/midiData"
+bitMidiSearchUrl = "https://bitmidi.com/api/midi/search"
+bitMidiBaseUrl = "https://bitmidi.com"
+# BitMidi's Cloudflare edge returns 520 for requests' default python-requests UA.
+bitMidiRequestHeaders = {"User-Agent": "BetterNanoMidi/1.0"}
 pageSize = 10
+bitMidiPageSize = 15
+hubCacheDirectory = os.path.join(configuration.baseDirectory, "Cache", "MidiHub")
+coverCacheDirectory = os.path.join(hubCacheDirectory, "covers")
+catalogCachePath = os.path.join(hubCacheDirectory, "catalog.json")
+coverPreloadWorkers = 8
+bitMidiRetryableStatuses = {500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526}
 currentPage = 1
-downloadFolder = os.path.join(baseDirectory, "Midis")
-allMidiData = None
-totalPages = None
-filteredData = None
-
+allMidiData: list[dict] = []
+filteredData: list[dict] = []
+totalPages = 0
+searchQuery = ""
+sortValue = "Newest"
+_activeSource = "nanomidi"
+_bitMidiQuery = ""
+_bitMidiResults: list[dict] = []
+_bitMidiTotalPages = 1
+_bitMidiTotal = 0
+_searchGeneration = 0
+_catalogGeneration = 0
+_requestLock = threading.RLock()
+downloadFolder = os.path.join(configuration.baseDirectory, "Midis")
 os.makedirs(downloadFolder, exist_ok=True)
 
-def searchBar(event=None):
-    logger.info("searchBar called")
-    try:
-        threading.Thread(target=filteredMidiData).start()
-    except Exception as e:
-        logger.exception(f"searchBar error: {e}")
 
-def sortComboCommand(value):
-    logger.info(f"sortComboCommand called with value: {value}")
-    try:
-        threading.Thread(target=sortMidiData, args=(value,)).start()
-    except Exception as e:
-        logger.exception(f"sortComboCommand error: {e}")
+def _emitHubState(**values) -> None:
+    app = mainFunctions.getApp()
+    if app and hasattr(app, "hubStateRequested"):
+        app.hubStateRequested.emit(values)
 
-def loadMidiData():
-    logger.info("loadMidiData called")
-    clearList()
-    def worker():
-        global allMidiData, totalPages, filteredData
-        from ui.midiHub import MidiHubTab
+
+def _coverCacheStem(image_filename: str) -> str:
+    digest = hashlib.sha256(image_filename.encode("utf-8")).hexdigest()
+    return os.path.join(coverCacheDirectory, digest)
+
+
+def _cachedCoverPath(image_filename: str) -> str:
+    if not image_filename:
+        return ""
+    stem = _coverCacheStem(image_filename)
+    for suffix in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+        candidate = stem + suffix
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def _coverCacheSuffix(image_filename: str, response: requests.Response) -> str:
+    content_type = str(response.headers.get("Content-Type", "")).split(";", 1)[0].strip().lower()
+    suffix_by_type = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "image/bmp": ".bmp",
+    }
+    if content_type in suffix_by_type:
+        return suffix_by_type[content_type]
+    source_suffix = Path(urlparse(image_filename).path).suffix.lower()
+    if source_suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
+        return source_suffix
+    content = response.content[:16]
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if content[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return ".webp"
+    return ".jpg"
+
+
+def _normaliseMidi(midi: dict) -> dict:
+    filename = str(midi.get("midiFilename") or "")
+    image = str(midi.get("imageFilename") or "")
+    cached_cover = _cachedCoverPath(image)
+    image_url = Path(cached_cover).as_uri() if cached_cover else (
+        f"https://api.nanomidi.net/api/v2/images/{quote(image, safe='')}?size=240x240" if image else ""
+    )
+    return {
+        "id": str(midi.get("id", "")),
+        "name": str(midi.get("name") or "Untitled MIDI"),
+        "artists": str(midi.get("artists") or "Unknown artist"),
+        "arranger": str(midi.get("arranger") or ""),
+        "uploader": str(midi.get("uploader") or "Unknown uploader"),
+        "downloads": int(midi.get("downloads") or 0),
+        "plays": 0,
+        "views": int(midi.get("views") or 0),
+        "midiFilename": filename,
+        "downloadUrl": f"https://api.nanomidi.net/api/midis/{filename}" if filename else "",
+        "imageUrl": image_url,
+        "source": "nanomidi",
+    }
+
+
+def _safeInt(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normaliseBitMidi(midi: dict) -> dict:
+    identifier = str(midi.get("id") or "")
+    raw_download_url = str(midi.get("downloadUrl") or "")
+    if not raw_download_url and identifier.isdigit():
+        raw_download_url = f"/uploads/{identifier}.mid"
+    download_url = urljoin(bitMidiBaseUrl + "/", raw_download_url)
+    parsed_url = urlparse(download_url)
+    if parsed_url.scheme != "https" or parsed_url.hostname != "bitmidi.com":
+        download_url = ""
+    filename = os.path.basename(urlparse(download_url).path) if download_url else ""
+    return {
+        "id": identifier,
+        "name": str(midi.get("name") or "Untitled MIDI"),
+        "artists": "",
+        "arranger": "",
+        "uploader": "BitMidi",
+        "downloads": 0,
+        "plays": _safeInt(midi.get("plays")),
+        "views": _safeInt(midi.get("views")),
+        "midiFilename": filename,
+        "downloadUrl": download_url,
+        "imageUrl": "",
+        "source": "bitmidi",
+        "createdAt": str(midi.get("createdAt") or ""),
+    }
+
+
+def _sorted(data: list[dict]) -> list[dict]:
+    if sortValue == "Newest":
+        return sorted(data, key=lambda item: int(item.get("id") or 0), reverse=True)
+    if sortValue == "Oldest":
+        return sorted(data, key=lambda item: int(item.get("id") or 0))
+    if sortValue == "Downloads":
+        return sorted(data, key=lambda item: int(item.get("downloads") or 0), reverse=True)
+    if sortValue == "Views":
+        return sorted(data, key=lambda item: int(item.get("views") or 0), reverse=True)
+    return list(data)
+
+
+def _filtered() -> list[dict]:
+    query = searchQuery.strip().casefold()
+    if not query:
+        return list(allMidiData)
+    return [
+        midi for midi in allMidiData
+        if query in str(midi.get("name", "")).casefold()
+        or query in str(midi.get("artists", "")).casefold()
+        or query in str(midi.get("uploader", "")).casefold()
+    ]
+
+
+def _publishPage() -> None:
+    global totalPages, filteredData, currentPage
+    with _requestLock:
+        filteredData = _sorted(_filtered())
+        totalPages = max(1, (len(filteredData) + pageSize - 1) // pageSize)
+        currentPage = min(max(1, currentPage), totalPages)
+        start = (currentPage - 1) * pageSize
+        items = [_normaliseMidi(item) for item in filteredData[start:start + pageSize]]
+        page = currentPage
+        total = totalPages
+        count = len(filteredData)
+    _emitHubState(
+        results=items,
+        page=page,
+        totalPages=total,
+        resultCount=count,
+        loading=False,
+        error="",
+        notice="",
+        source="nanomidi",
+    )
+
+
+def _publishBitMidiPage(notice: str = "BitMidi results") -> None:
+    global currentPage
+    with _requestLock:
+        rows = list(_bitMidiResults)
+        if sortValue == "Views":
+            rows.sort(key=lambda item: _safeInt(item.get("views")), reverse=True)
+        elif sortValue == "Downloads":
+            rows.sort(key=lambda item: _safeInt(item.get("plays")), reverse=True)
+        elif sortValue in {"Newest", "Oldest"}:
+            rows.sort(
+                key=lambda item: str(item.get("createdAt") or ""),
+                reverse=sortValue == "Newest",
+            )
+        page = min(max(1, currentPage), max(1, _bitMidiTotalPages))
+        currentPage = page
+        count = _bitMidiTotal
+        total = max(1, _bitMidiTotalPages)
+    _emitHubState(
+        results=rows,
+        page=page,
+        totalPages=total,
+        resultCount=count,
+        loading=False,
+        error="",
+        notice=notice,
+        source="bitmidi",
+    )
+
+
+def _bitMidiFailureMessage(error: Exception) -> str:
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+    if status == 520:
+        return (
+            "BitMidi is returning HTTP 520 from its upstream server. "
+            "The catalog is temporarily unavailable; try again shortly."
+        )
+    if status is not None:
+        return f"BitMidi is temporarily unavailable (HTTP {status}). Please try again shortly."
+    if isinstance(error, requests.Timeout):
+        return "BitMidi took too long to respond. Please try the search again."
+    if isinstance(error, requests.ConnectionError):
+        return "Could not connect to BitMidi. Check your connection and try again."
+    if isinstance(error, ValueError):
+        return "BitMidi returned an unexpected search response. Please try again later."
+    return f"BitMidi search failed ({error.__class__.__name__}). Please try again later."
+
+
+def _startBitMidiSearch(query: str, page: int, generation: int | None = None) -> None:
+    global _activeSource, _bitMidiQuery, _searchGeneration, currentPage
+    with _requestLock:
+        if generation is None:
+            _searchGeneration += 1
+            generation = _searchGeneration
+        _activeSource = "bitmidi"
+        _bitMidiQuery = query
+        currentPage = max(1, int(page))
+        requested_page = currentPage
+    _emitHubState(
+        results=[],
+        page=requested_page,
+        totalPages=1,
+        resultCount=0,
+        loading=True,
+        error="",
+        notice="No local matches. Searching BitMidi; this may take longer.",
+        source="bitmidi",
+    )
+
+    def worker() -> None:
+        global _bitMidiResults, _bitMidiTotalPages, _bitMidiTotal
         try:
-            logger.debug(f"Requesting {midiDataUrl}")
-            response = requests.get(midiDataUrl, timeout=10)
+            params = {"q": query, "page": requested_page - 1, "pageSize": bitMidiPageSize}
+            for attempt in range(2):
+                try:
+                    response = requests.get(
+                        bitMidiSearchUrl,
+                        params=params,
+                        headers=bitMidiRequestHeaders,
+                        timeout=(6, 30),
+                    )
+                except (requests.Timeout, requests.ConnectionError):
+                    if attempt == 1:
+                        raise
+                    time.sleep(0.8)
+                    continue
+
+                if attempt == 0 and response.status_code in bitMidiRetryableStatuses:
+                    time.sleep(0.8)
+                    continue
+                response.raise_for_status()
+                break
+
+            payload = response.json()
+            result = payload.get("result") if isinstance(payload, dict) else None
+            if not isinstance(result, dict) or not isinstance(result.get("results"), list):
+                raise ValueError("Unexpected BitMidi search response.")
+
+            items = [
+                _normaliseBitMidi(item)
+                for item in result["results"]
+                if isinstance(item, dict)
+            ]
+            total_count = _safeInt(result.get("total"))
+            reported_pages = _safeInt(result.get("pageTotal"))
+            pages = max(
+                1,
+                reported_pages,
+                (total_count + bitMidiPageSize - 1) // bitMidiPageSize,
+            )
+            with _requestLock:
+                if generation != _searchGeneration or _activeSource != "bitmidi":
+                    return
+                _bitMidiResults = items
+                _bitMidiTotalPages = pages
+                _bitMidiTotal = total_count if total_count else len(items)
+                currentPage = requested_page
+                no_results = not items
+            _publishBitMidiPage(
+                "No matches found in the BitMidi catalog." if no_results else "BitMidi results"
+            )
+        except Exception as exc:
+            with _requestLock:
+                if generation != _searchGeneration or _activeSource != "bitmidi":
+                    return
+                _bitMidiResults = []
+                _bitMidiTotalPages = 1
+                _bitMidiTotal = 0
+            _emitHubState(
+                results=[],
+                page=1,
+                totalPages=1,
+                resultCount=0,
+                loading=False,
+                error=_bitMidiFailureMessage(exc),
+                notice="",
+                source="bitmidi",
+            )
+
+    threading.Thread(target=worker, name="bitmidi-search", daemon=True).start()
+
+
+def searchBar(_event=None) -> None:
+    filteredMidiData()
+
+
+def sortComboCommand(value: str) -> None:
+    global sortValue, currentPage
+    sortValue = str(value or "Newest")
+    currentPage = 1
+    if _activeSource == "bitmidi":
+        _publishBitMidiPage()
+    else:
+        _publishPage()
+
+
+def loadMidiData() -> None:
+    """Fetch the catalog off the UI thread and publish the first page."""
+    global allMidiData, currentPage, _activeSource, _searchGeneration, _catalogGeneration
+    with _requestLock:
+        _catalogGeneration += 1
+        catalog_generation = _catalogGeneration
+        _searchGeneration += 1
+        search_generation = _searchGeneration
+        _activeSource = "nanomidi"
+        currentPage = 1
+    _emitHubState(loading=True, error="", notice="", results=[], source="nanomidi")
+
+    def worker() -> None:
+        global allMidiData, currentPage
+        try:
+            response = requests.get(midiDataUrl, timeout=12)
             response.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Failed to load MIDI data: {e}")
-            def errorUi(err=e):
-                for widget in MidiHubTab.mainScrollFrame.winfo_children():
-                    info = widget.grid_info()
-                    if info and int(info.get("row", 1)) > 0:
-                        try:
-                            widget.destroy()
-                        except Exception as ex:
-                            logger.debug(f"Widget destroy failed: {ex}")
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise ValueError("The MIDI catalog response was not a list.")
+            with _requestLock:
+                if catalog_generation != _catalogGeneration:
+                    return
+                allMidiData = list(reversed(payload))
+                currentPage = 1
+                local_matches = _filtered()
+                still_current = search_generation == _searchGeneration
+            if searchQuery.strip() and not local_matches:
+                _startBitMidiSearch(searchQuery, 1, search_generation if still_current else None)
+            else:
+                _publishPage()
+        except Exception as exc:
+            with _requestLock:
+                if catalog_generation != _catalogGeneration:
+                    return
+            _emitHubState(
+                results=[],
+                page=1,
+                totalPages=1,
+                resultCount=0,
+                loading=False,
+                notice="",
+                error=(
+                    "Couldn't reach nanomidi.net. Check your connection and try again. "
+                    f"({exc.__class__.__name__})"
+                ),
+                source="nanomidi",
+            )
 
-                pleaseWait = ctk.CTkLabel(
-                    MidiHubTab.mainScrollFrame, text="Couldn't reach\nnanomidi.net!",
-                    text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"],
-                    compound="left", font=customTheme.globalFont40
-                )
-                pleaseWait.grid(row=1, column=0, padx=10, pady=(30,0), sticky="new")
+    threading.Thread(target=worker, name="midi-hub-load", daemon=True).start()
 
-                pleaseWait2 = ctk.CTkLabel(
-                    MidiHubTab.mainScrollFrame, 
-                    text=f"Error: {err.__class__.__name__}\n\nThis may have happened for one of the\nfollowing reasons:\n\n1. You are offline.\n2. Something is blocking your connection\nto https://nanomidi.net\n3. The server is currently offline or encountered\nan issue — please try again later.\n\nIf nanoMIDI is Offline, please report it to the\ndeveloper or check server status here\nhttps://status.nanomidi.net",
-                    text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"],
-                    compound="left", font=customTheme.globalFont14
+
+def _saveCatalogCache(payload: list[dict]) -> None:
+    os.makedirs(hubCacheDirectory, exist_ok=True)
+    temporary = catalogCachePath + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as cache_file:
+        json.dump(payload, cache_file, ensure_ascii=False, separators=(",", ":"))
+    os.replace(temporary, catalogCachePath)
+
+
+def _loadCatalogCache() -> list[dict] | None:
+    try:
+        with open(catalogCachePath, "r", encoding="utf-8") as cache_file:
+            payload = json.load(cache_file)
+        if isinstance(payload, list) and all(isinstance(item, dict) for item in payload):
+            return payload
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def _downloadCover(image_filename: str) -> bool:
+    if not image_filename or _cachedCoverPath(image_filename):
+        return False
+    image_url = f"https://api.nanomidi.net/api/v2/images/{quote(image_filename, safe='')}?size=240x240"
+    try:
+        response = requests.get(image_url, timeout=(2.5, 5))
+        response.raise_for_status()
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+        data = response.content
+        signature = data[:16]
+        looks_like_image = (
+            content_type.startswith("image/")
+            or signature.startswith(b"\x89PNG\r\n\x1a\n")
+            or signature.startswith(b"\xff\xd8\xff")
+            or signature[:6] in (b"GIF87a", b"GIF89a")
+            or (signature.startswith(b"RIFF") and signature[8:12] == b"WEBP")
+            or signature.startswith(b"BM")
+        )
+        if not looks_like_image or not data:
+            return False
+        os.makedirs(coverCacheDirectory, exist_ok=True)
+        cache_path = _coverCacheStem(image_filename) + _coverCacheSuffix(image_filename, response)
+        temporary = cache_path + ".tmp"
+        with open(temporary, "wb") as cover_file:
+            cover_file.write(data)
+        os.replace(temporary, cache_path)
+        return True
+    except (OSError, requests.RequestException):
+        return False
+
+
+def preloadMidiHubForStartup() -> None:
+    """Warm the MIDI Hub catalog and cover cache without blocking the UI thread."""
+    global _activeSource, _catalogGeneration, currentPage
+    with _requestLock:
+        _catalogGeneration += 1
+        generation = _catalogGeneration
+        _activeSource = "nanomidi"
+        currentPage = 1
+    _emitHubState(
+        startupProgress=0,
+        startupStatus="Fetching the MIDI Hub catalog…",
+        startupReady=False,
+        loading=True,
+        error="",
+        notice="",
+    )
+
+    def worker() -> None:
+        global allMidiData, currentPage
+        cached_catalog = _loadCatalogCache()
+        catalog: list[dict] | None = cached_catalog
+        offline = False
+
+        if catalog is not None:
+            with _requestLock:
+                if generation != _catalogGeneration:
+                    return
+                allMidiData = list(reversed(catalog))
+                currentPage = 1
+            _publishPage()
+            cached_images = list(dict.fromkeys(
+                str(item.get("imageFilename") or "").strip()
+                for item in reversed(catalog)
+                if str(item.get("imageFilename") or "").strip()
+            ))
+            cached_covers = sum(1 for name in cached_images if _cachedCoverPath(name))
+            cache_complete = cached_covers == len(cached_images)
+            _emitHubState(
+                startupProgress=(100 if cache_complete else int(cached_covers * 100 / max(1, len(cached_images)))),
+                startupStatus=("MIDI Hub cache ready" if cache_complete else f"Preparing cached MIDI Hub · {cached_covers}/{len(cached_images)} covers"),
+                startupReady=cache_complete,
+            )
+
+        try:
+            response = requests.get(midiDataUrl, timeout=(3, 9))
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+                raise ValueError("The MIDI catalog response was not a list of entries.")
+            catalog = payload
+            try:
+                _saveCatalogCache(payload)
+            except OSError:
+                pass
+        except Exception:
+            offline = catalog is not None
+
+        if catalog is None:
+            with _requestLock:
+                is_current = generation == _catalogGeneration
+            if is_current:
+                _emitHubState(
+                    results=[],
+                    page=1,
+                    totalPages=1,
+                    resultCount=0,
+                    loading=False,
+                    error="Couldn't reach nanomidi.net. Check your connection and try again.",
+                    notice="",
+                    source="nanomidi",
+                    startupProgress=100,
+                    startupStatus="MIDI Hub unavailable · opening offline",
+                    startupReady=True,
                 )
-                pleaseWait2.grid(row=2, column=0, padx=10, pady=(0,0), sticky="new")
-            MidiHubTab.mainScrollFrame.after(0, errorUi)
             return
 
-        try:
-            allMidiData = response.json()
-            logger.debug(f"Fetched {len(allMidiData)} MIDI entries")
-            allMidiData.reverse()
-            filteredData = allMidiData
-            totalPages = (len(filteredData) + pageSize - 1) // pageSize
-            showPage(currentPage)
-        except Exception as e:
-            logger.exception(f"Parsing response error: {e}")
+        with _requestLock:
+            if generation != _catalogGeneration:
+                return
+            allMidiData = list(reversed(catalog))
+            currentPage = 1
+        _publishPage()
 
-    threading.Thread(target=worker, daemon=True).start()
-
-def fetchImage(midi):
-    try:
-        imageUrl = f"https://api.nanomidi.net/api/v2/images/{midi['imageFilename']}?size=100x100"
-        logger.debug(f"Fetching image {imageUrl}")
-        response = requests.get(imageUrl, stream=True)
-        return ctk.CTkImage(Image.open(response.raw), size=(100, 100))
-    except Exception as e:
-        logger.exception(f"fetchImage error for {midi.get('imageFilename')}: {e}")
-        return None
-
-def sortMidiData(selectedValue):
-    logger.info(f"sortMidiData called with {selectedValue}")
-    global totalPages, filteredData
-    try:
-        clearList()
-        if selectedValue == "Newest":
-            filteredData = sorted(allMidiData, key=lambda x: x["id"], reverse=True)
-        elif selectedValue == "Oldest":
-            filteredData = sorted(allMidiData, key=lambda x: x["id"])
-        elif selectedValue == "Downloads":
-            filteredData = sorted(allMidiData, key=lambda m: m.get("downloads", 0), reverse=True)
-        elif selectedValue == "Views":
-            filteredData = sorted(allMidiData, key=lambda m: m.get("views", 0), reverse=True)
-        else:
-            filteredData = allMidiData
-
-        totalPages = (len(filteredData) + pageSize - 1) // pageSize
-        showPage(currentPage)
-    except Exception as e:
-        logger.exception(f"sortMidiData error: {e}")
-
-def showPage(page):
-    logger.info(f"showPage called with page {page}")
-    clearList()
-    def worker():
-        global filteredData
-        from ui.midiHub import MidiHubTab
-        try:
-            startIndex = (page - 1) * pageSize
-            endIndex = min(startIndex + pageSize, len(filteredData))
-            logger.debug(f"Rendering entries {startIndex} to {endIndex}")
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                results = [(midi, executor.submit(fetchImage, midi)) for midi in filteredData[startIndex:endIndex]]
-            def render():
-                if hasattr(MidiHubTab, "loadingFrame"):
-                    MidiHubTab.loadingFrame.destroy()
-                for index, (midi, future) in enumerate(results, start=1):
-                    try:
-                        midiImage = future.result()
-                    except Exception as e:
-                        logger.debug(f"Image fetch failed for {midi.get('name')}: {e}")
-                        midiImage = None
-                    createMidiFrame(index, midi, midiImage)
-                midiHubFooter()
-            MidiHubTab.mainScrollFrame.after(0, render)
-        except Exception as e:
-            logger.exception(f"showPage worker error: {e}")
-    threading.Thread(target=worker, daemon=True).start()
-
-def createMidiFrame(row, midi, midiImage):
-    from ui.midiHub import MidiHubTab
-    logger.debug(f"Creating frame for {midi.get('name')} at row {row}")
-    try:
-        def wrapText(text, width):
-            return "\n".join(textwrap.wrap(text, width=width, break_long_words=True))
-
-        nameText = wrapText(midi["name"], 28)
-        artistText = wrapText(midi["artists"], 36)
-        arrText = "Arr: " + (wrapText(midi["arranger"], 36) if midi["arranger"] else "N/A")
-        uploaderText = "Uploader: " + wrapText(midi["uploader"], 36)
-
-        nameLines = nameText.count("\n") + 1
-        artistLines = artistText.count("\n") + 1
-        arrLines = arrText.count("\n") + 1
-        uploaderLines = uploaderText.count("\n") + 1
-        totalLines = nameLines + artistLines + arrLines + uploaderLines
-        frameHeight = max(100, 40 + totalLines * 18)
-
-        midiFrame = ctk.CTkFrame(
-            master=MidiHubTab.mainScrollFrame,
-            height=frameHeight,
-            fg_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["MidiCardBackColor"]
+        image_names = list(dict.fromkeys(
+            str(item.get("imageFilename") or "").strip()
+            for item in reversed(catalog)
+            if str(item.get("imageFilename") or "").strip()
+        ))
+        total = len(image_names)
+        cached_count = sum(1 for name in image_names if _cachedCoverPath(name))
+        initial_progress = 100 if total == 0 else int(cached_count * 100 / total)
+        missing_names = [name for name in image_names if not _cachedCoverPath(name)]
+        status_prefix = "Using cached MIDI Hub data" if offline else "Loading MIDI Hub covers"
+        _emitHubState(
+            startupProgress=initial_progress,
+            startupStatus=("MIDI Hub ready" if initial_progress == 100 else f"{status_prefix} · {cached_count}/{total}"),
+            startupReady=not missing_names,
         )
-        midiFrame.grid(row=row, column=0, padx=20, pady=5, sticky="nsew")
 
-        midiImageButton = ctk.CTkButton(
-            master=midiFrame, text="", fg_color="transparent", width=100, height=100,
-            state="disabled", image=midiImage
-        )
-        midiImageButton.grid(row=0, column=0, sticky="w")
+        if not missing_names:
+            with _requestLock:
+                is_current = generation == _catalogGeneration
+            if is_current:
+                # Re-publish with local file URLs for already cached covers.
+                _publishPage()
+            _emitHubState(
+                startupProgress=100,
+                startupStatus=("MIDI Hub ready" if not offline else "MIDI Hub ready · using cached catalog"),
+                startupReady=True,
+                loading=False,
+            )
+            return
 
-        ctk.CTkLabel(
-            midiFrame, text=nameText,
-            font=customTheme.globalFont14, text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"],
-            anchor="w", justify="left"
-        ).grid(row=0, column=0, padx=120, pady=(0, 80 + (nameLines - 1) * 18), sticky="w")
+        cover_queue: queue.Queue[str] = queue.Queue()
+        for image_name in missing_names:
+            cover_queue.put(image_name)
+        progress_lock = threading.Lock()
+        progress_state = {"completed": cached_count}
+        _emitHubState(startupReady=False)
 
-        ctk.CTkLabel(
-            midiFrame, text=artistText,
-            font=customTheme.globalFont12, text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"],
-            anchor="w", justify="left"
-        ).grid(row=0, column=0, padx=120, pady=(0, 35 + (artistLines - 1) * 18), sticky="w")
+        def cover_worker() -> None:
+            while True:
+                try:
+                    image_name = cover_queue.get_nowait()
+                except queue.Empty:
+                    return
+                _downloadCover(image_name)
+                with progress_lock:
+                    progress_state["completed"] += 1
+                    processed = progress_state["completed"]
+                    finished = processed >= total
+                if processed % 5 == 0 or finished:
+                    _emitHubState(
+                        startupProgress=int(processed * 100 / max(1, total)),
+                        startupStatus=f"{status_prefix} · {processed}/{total}",
+                    )
+                cover_queue.task_done()
+                if finished:
+                    with _requestLock:
+                        is_current = generation == _catalogGeneration
+                    if is_current:
+                        # Re-publish with local file URLs for covers warmed by this run.
+                        _publishPage()
+                    ready_covers = sum(1 for name in image_names if _cachedCoverPath(name))
+                    final_status = (
+                        f"MIDI Hub ready · {ready_covers}/{total} covers"
+                        if ready_covers < total
+                        else ("MIDI Hub ready" if not offline else "MIDI Hub ready · using cached catalog")
+                    )
+                    _emitHubState(
+                        startupProgress=100,
+                        startupStatus=final_status,
+                        startupReady=True,
+                        loading=False,
+                    )
 
-        ctk.CTkLabel(
-            midiFrame, text=arrText,
-            font=customTheme.globalFont11, text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"],
-            anchor="w", justify="left"
-        ).grid(row=0, column=0, padx=120, pady=(40 + (arrLines - 1) * 18, 0), sticky="w")
+        for index in range(min(coverPreloadWorkers, len(missing_names))):
+            threading.Thread(
+                target=cover_worker,
+                name=f"hub-cover-preload-{index + 1}",
+                daemon=True,
+            ).start()
 
-        ctk.CTkLabel(
-            midiFrame, text=uploaderText,
-            font=customTheme.globalFont11, text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"],
-            anchor="w", justify="left"
-        ).grid(row=0, column=0, padx=120, pady=(80 + (uploaderLines - 1) * 18, 0), sticky="w")
+    threading.Thread(target=worker, name="midi-hub-startup-preload", daemon=True).start()
 
-        midiFilename = midi["midiFilename"]
-        if midiFilename:
-            downloadUrl = "https://api.nanomidi.net/api/midis/" + midiFilename
-            ctk.CTkButton(
-                master=midiFrame, text="", width=24, height=24,
-                fg_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["DownloadButtonColor"],
-                hover_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["DownloadButtonHoverColor"],
-                image=customTheme.downloadImageFile,
-                command=lambda url=downloadUrl: downloadMidi(url)
-            ).grid(row=0, column=0, padx=345, pady=(75 + (totalLines - 4) * 18, 0), sticky="e")
-    except Exception as e:
-        logger.exception(f"createMidiFrame error: {e}")
 
-def downloadMidi(url):
-    logger.info(f"downloadMidi called with url {url}")
-    try:
-        from ui.midiPlayer import MidiPlayerTab
-        app = mainFunctions.getApp()
-        response = requests.get(url)
-        filename = url.split("/")[-1]
-        filepath = os.path.join(downloadFolder, filename)
+def fetchImage(midi: dict) -> str:
+    return _normaliseMidi(midi).get("imageUrl", "")
 
-        configuration.configData['midiPlayer']['currentFile'] = filepath
-        midi_list = configuration.configData['midiPlayer'].get('midiList', [])
-        if filepath not in midi_list:
-            midi_list.append(filepath)
-        configuration.configData['midiPlayer']['midiList'] = midi_list
-        configuration.configData.save()
 
-        with open(filepath, "wb") as f:
-            f.write(response.content)
+def sortMidiData(selectedValue: str) -> None:
+    sortComboCommand(selectedValue)
 
-        currentValues = list(MidiPlayerTab.filePathEntry.cget("values"))
-        if filepath not in currentValues:
-            currentValues.append(filepath)
-            MidiPlayerTab.filePathEntry.configure(values=currentValues)
-        MidiPlayerTab.filePathEntry.set(filepath)
-        
-        app.showFrame("midi")
-        midiFile = MidiFile(filepath, clip=True)
-        totalTime = midiFile.length
-        timelineText = (
-            f"0:00:00 / {str(datetime.timedelta(seconds=int(totalTime)))}"
-            if configuration.configData['appUI']['timestamp']
-            else f"X:XX:XX / {str(datetime.timedelta(seconds=int(totalTime)))}"
-        )
-        MidiPlayerTab.timelineIndicator.configure(text=timelineText)
 
-        threading.Thread(target=mainFunctions.log, args=("Downloaded MIDI File:",)).start()
-        threading.Thread(target=mainFunctions.log, args=(filepath,)).start()
-        logger.debug(f"Downloaded and saved to {filepath}")
-    except Exception as e:
-        logger.exception(f"downloadMidi error: {e}")
-
-def midiHubFooter():
-    logger.debug("midiHubFooter called")
-    try:
-        from ui.midiHub import MidiHubTab
-        paginationFrame = ctk.CTkFrame(master=MidiHubTab.mainScrollFrame, fg_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["PageControlFrameBackground"])
-        paginationFrame.grid(row=pageSize + 1, column=0, padx=20, pady=5, sticky="nsew")
-        ctk.CTkButton(master=paginationFrame, text="Previous", width=118, font=customTheme.globalFont14,
-            command=prevPage, text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"],
-            fg_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["PreviousButtonColor"],
-            hover_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["PreviousButtonHoverColor"]).grid(row=0, column=0, padx=9, pady=10)
-        ctk.CTkLabel(master=paginationFrame, text=f"Page {currentPage}/{totalPages}", font=customTheme.globalFont14,
-            text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"]).grid(row=0, column=1, padx=(13, 0), pady=10)
-        ctk.CTkButton(master=paginationFrame, text="Next", font=customTheme.globalFont14, width=118,
-            command=nextPage, text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"],
-            fg_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["NextButtonColor"],
-            hover_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["NextButtonHoverColor"]).grid(row=0, column=2, padx=18, pady=10)
-    except Exception as e:
-        logger.exception(f"midiHubFooter error: {e}")
-
-def prevPage():
+def showPage(page: int) -> None:
     global currentPage
-    logger.info("prevPage called")
-    try:
-        if currentPage > 1:
-            currentPage -= 1
-            showPage(currentPage)
-    except Exception as e:
-        logger.exception(f"prevPage error: {e}")
+    if _activeSource == "bitmidi":
+        _startBitMidiSearch(_bitMidiQuery, max(1, int(page)))
+        return
+    currentPage = max(1, int(page))
+    _publishPage()
 
-def nextPage():
-    global currentPage
-    logger.info("nextPage called")
-    try:
-        if currentPage < totalPages:
-            currentPage += 1
-            showPage(currentPage)
-    except Exception as e:
-        logger.exception(f"nextPage error: {e}")
 
-def filteredMidiData():
-    global totalPages, filteredData, currentPage
-    logger.info("filteredMidiData called")
-    try:
-        from ui.midiHub import MidiHubTab
-        for widget in MidiHubTab.mainScrollFrame.winfo_children():
-            if widget not in (MidiHubTab.searchEntry, MidiHubTab.searchButton, MidiHubTab.sortComboBox):
-                widget.destroy()
+def downloadMidi(url: str) -> None:
+    """Download one selected MIDI, add it to the saved player list, and open it."""
+    def worker() -> None:
+        try:
+            response = requests.get(str(url), headers=bitMidiRequestHeaders, timeout=30)
+            response.raise_for_status()
+            filename = os.path.basename(urlparse(str(url)).path)
+            if not filename.lower().endswith((".mid", ".midi")):
+                raise ValueError("The catalog did not provide a MIDI filename.")
+            filepath = os.path.join(downloadFolder, filename)
+            temporary = filepath + ".download"
+            with open(temporary, "wb") as midi_file:
+                midi_file.write(response.content)
+            os.replace(temporary, filepath)
 
-        pleaseWait = ctk.CTkLabel(
-            MidiHubTab.mainScrollFrame, text="Please Wait...", text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"],
-            compound="left", font=customTheme.globalFont40
-        )
-        pleaseWait.grid(row=1, column=0, padx=10, pady=(150,0), sticky="nsew")
-        pleaseWait2 = ctk.CTkLabel(
-            MidiHubTab.mainScrollFrame, text="Fetching from nanomidi.net...", text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"],
-            compound="left", font=customTheme.globalFont14
-        )
-        pleaseWait2.grid(row=2, column=0, padx=10, pady=(100,0), sticky="nsew")
-        MidiHubTab.mainScrollFrame.update()
+            midi_settings = configuration.configData["midiPlayer"]
+            midi_settings["currentFile"] = filepath
+            midi_list = list(midi_settings.get("midiList", []))
+            if filepath not in midi_list:
+                midi_list.append(filepath)
+            midi_settings["midiList"] = midi_list
+            configuration.configData.save()
 
-        searchQuery = MidiHubTab.searchEntry.get().lower()
-        logger.debug(f"searchQuery: {searchQuery}")
-        filteredData = [
-            midi for midi in allMidiData
-            if searchQuery in midi["name"].lower() or searchQuery in midi["artists"].lower()
-        ]
-        totalPages = (len(filteredData) + pageSize - 1) // pageSize
+            _emitHubState(downloads={str(url): "complete"})
+            app = mainFunctions.getApp()
+            if app:
+                app.downloadedMidiRequested.emit(filepath)
+            mainFunctions.log(f"Downloaded MIDI File: {filepath}")
+        except Exception as exc:
+            _emitHubState(downloads={str(url): "error"})
+            mainFunctions.showMessage("Download failed", f"Couldn't download this MIDI file. {exc}", "error")
+
+    threading.Thread(target=worker, name="midi-hub-download", daemon=True).start()
+
+
+def prevPage() -> None:
+    showPage(currentPage - 1)
+
+
+def nextPage() -> None:
+    showPage(currentPage + 1)
+
+
+def filteredMidiData(query: str | None = None) -> None:
+    global searchQuery, currentPage, _searchGeneration, _activeSource, _bitMidiResults, _bitMidiTotal
+    if query is None:
+        query = MidiHubTab.searchEntry.get()
+    with _requestLock:
+        searchQuery = str(query or "")
         currentPage = 1
-        showPage(currentPage)
-    except Exception as e:
-        logger.exception(f"filteredMidiData error: {e}")
+        _searchGeneration += 1
+        generation = _searchGeneration
+        _activeSource = "nanomidi"
+        _bitMidiResults = []
+        _bitMidiTotal = 0
+        local_matches = _filtered()
+    if searchQuery.strip() and not local_matches:
+        _startBitMidiSearch(searchQuery, 1, generation)
+    else:
+        _publishPage()
 
-def clearList():
-    logger.debug("clearList called")
-    try:
-        from ui.midiHub import MidiHubTab
-        MidiHubTab.mainScrollFrame._parent_canvas.yview_moveto(0)
-        for widget in MidiHubTab.mainScrollFrame.winfo_children():
-            if widget not in (MidiHubTab.searchEntry, MidiHubTab.searchButton, MidiHubTab.sortComboBox):
-                widget.destroy()
-        loadingFrame = ctk.CTkFrame(MidiHubTab.mainScrollFrame, fg_color="transparent")
-        loadingFrame.grid(row=1, column=0, padx=10, pady=(150,0), sticky="nsew")
-        pleaseWaitText = ctk.CTkLabel(
-            loadingFrame, text="Please Wait...", 
-            text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"],
-            compound="left", font=customTheme.globalFont40
-        )
-        pleaseWaitText.pack()
-        pleaseWaitText2 = ctk.CTkLabel(
-            loadingFrame, text="Fetching from nanomidi.net...", 
-            text_color=customTheme.activeThemeData["Theme"]["MIDIHub"]["TextColor"],
-            compound="left", font=customTheme.globalFont14
-        )
-        pleaseWaitText2.pack(pady=10)
-        MidiHubTab.loadingFrame = loadingFrame
-    except Exception as e:
-        logger.exception(f"clearList error: {e}")
+
+def clearList() -> None:
+    _emitHubState(results=[], loading=True, error="")

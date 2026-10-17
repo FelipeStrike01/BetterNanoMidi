@@ -1,6 +1,18 @@
 {
-  "Name": "Dark (Default)",
+  "Name": "Dark",
   "Theme": {
+    "Brand": {
+      "Background": "#141210",
+      "Surface": "#1D1A17",
+      "Raised": "#25211D",
+      "Text": "#E9E1D8",
+      "Muted": "#A89D91",
+      "Line": "#382F29",
+      "Accent": "#B76B4D",
+      "AccentHover": "#CC825F",
+      "Danger": "#B3655C",
+      "Success": "#8AAB86"
+    },
     "GlobalFont": {
       "Windows": "Consolas",
       "macOS": "Menlo",

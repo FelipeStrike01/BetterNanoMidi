@@ -1,9 +1,7 @@
 import os
 import json
-import platform
-import shutil
-import requests
 import sys
+from pathlib import Path
 
 documentsDir = os.path.join(os.path.expanduser("~"), "Documents")
 baseDirectory = os.path.join(documentsDir, "nanoMIDIPlayer")
@@ -16,7 +14,7 @@ def resourcePath(relativePath):
     if hasattr(sys, '_MEIPASS'):
         basePath = sys._MEIPASS
     else:
-        basePath = os.path.abspath(".")
+        basePath = str(Path(__file__).resolve().parents[1])
     return os.path.join(basePath, relativePath)
 
 defaultConfigPath = resourcePath("assets/defaultConfig.json")
@@ -88,12 +86,9 @@ class ConfigManager:
     def __init__(self):
         self.configPath = configPath
         self.defaultConfigPath = defaultConfigPath
-        self.remoteConfigUrl = "https://raw.githubusercontent.com/NotHammer043/nanoMIDIPlayer/refs/heads/main/api/defaultConfig.json"
-        
         self._configData = SafeDict(self, {})
         self.loadConfig()
         self.validateConfig()
-        self.checkRemoteUpdates()
     
     def loadConfig(self):
         if not os.path.exists(self.configPath):
@@ -128,20 +123,12 @@ class ConfigManager:
             self.saveConfig()
     
     def getDefaultConfig(self):
-        localDefault = {}
-        if os.path.exists(self.defaultConfigPath):
-            with open(self.defaultConfigPath, "r") as f:
-                localDefault = json.load(f)
-        
-        remoteDefault = {}
         try:
-            response = requests.get(self.remoteConfigUrl, timeout=5)
-            if response.status_code == 200:
-                remoteDefault = response.json()
-        except:
-            pass
-        
-        return remoteDefault or localDefault
+            with open(self.defaultConfigPath, "r", encoding="utf-8") as default_file:
+                data = json.load(default_file)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
     
     def validateConfig(self):
         defaultConfig = self.getDefaultConfig()
@@ -161,32 +148,6 @@ class ConfigManager:
         if updated:
             self.saveConfig()
     
-    def checkRemoteUpdates(self):
-        try:
-            response = requests.get(self.remoteConfigUrl, timeout=5)
-            if response.status_code == 200:
-                remoteConfig = response.json()
-                self.validateAgainstRemote(remoteConfig)
-        except:
-            pass
-    
-    def validateAgainstRemote(self, remoteConfig):
-        updated = False
-        
-        def deepCheck(target, source, path=""):
-            nonlocal updated
-            for key, value in source.items():
-                if key not in target:
-                    target[key] = value
-                    updated = True
-                elif isinstance(value, dict) and isinstance(target.get(key), dict):
-                    deepCheck(target[key], value, f"{path}.{key}" if path else key)
-        
-        deepCheck(self._configData, remoteConfig)
-        
-        if updated:
-            self.saveConfig()
-    
     def saveConfig(self):
         with open(self.configPath, "w") as file:
             json.dump(self._configData.to_dict(), file, indent=2)
@@ -202,6 +163,9 @@ class ConfigManager:
             return self[key]
         except KeyError:
             return default
+
+    def to_dict(self):
+        return self._configData.to_dict()
     
     def save(self):
         self.saveConfig()
