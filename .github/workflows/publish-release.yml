@@ -1,0 +1,97 @@
+name: Publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to publish
+        required: true
+        type: string
+      source_run_id:
+        description: Successful build workflow run containing the artifacts
+        required: true
+        type: string
+      target_sha:
+        description: Commit the release tag should point to
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_sha }}
+
+      - uses: actions/download-artifact@v7
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          path: artifacts
+
+      - name: Verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            "artifacts/windows-exe/Better NanoMid.exe"
+            "artifacts/macOS-ARM/BetterNanoMidi-ARM.dmg"
+            "artifacts/macOS-Intel/BetterNanoMidi-Intel.dmg"
+            "artifacts/linux-build/BetterNanoMidi"
+            "artifacts/linux-build/BetterNanoMidi.tar.gz"
+          )
+          for file in "${files[@]}"; do
+            test -s "$file"
+            sha256sum "$file"
+          done
+
+      - name: Create draft release and upload artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists" >&2
+            exit 1
+          fi
+
+          cat > release-notes.md <<'NOTES'
+          ## Better NanoMidi v1.0.1
+
+          This release fixes cross-platform packaging for Linux and macOS, refreshes the GitHub Actions toolchain, and includes the latest Better NanoMidi improvements.
+
+          ### Downloads
+
+          - **Windows:** `Better NanoMid.exe`
+          - **macOS Apple Silicon:** `BetterNanoMidi-ARM.dmg`
+          - **macOS Intel:** `BetterNanoMidi-Intel.dmg`
+          - **Linux:** `BetterNanoMidi.tar.gz` (portable bundle) and `BetterNanoMidi` (standalone executable)
+          NOTES
+
+          gh release create "$RELEASE_TAG" \
+            --repo "$GH_REPO" \
+            --target "$TARGET_SHA" \
+            --title "Better NanoMidi $RELEASE_TAG" \
+            --notes-file release-notes.md \
+            --draft
+
+          gh release upload "$RELEASE_TAG" \
+            "artifacts/windows-exe/Better NanoMid.exe" \
+            "artifacts/macOS-ARM/BetterNanoMidi-ARM.dmg" \
+            "artifacts/macOS-Intel/BetterNanoMidi-Intel.dmg" \
+            "artifacts/linux-build/BetterNanoMidi" \
+            "artifacts/linux-build/BetterNanoMidi.tar.gz" \
+            --repo "$GH_REPO"
+
+          gh release edit "$RELEASE_TAG" --repo "$GH_REPO" --draft=false
+          gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json url,isDraft,assets --jq '{url: .url, draft: .isDraft, assets: [.assets[] | {name: .name, size: .size}]}'
