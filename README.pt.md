@@ -1,7 +1,10 @@
 # Better NanoMidi
 
 <p align="center">
-  <img src="assets/branding/better-nanomidi/readme-banner.png" alt="Forma de onda MIDI abstrata na paleta grafite e terracota do Better NanoMidi" width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/branding/better-nanomidi/logo-horizontal-on-dark.png">
+    <img src="assets/branding/better-nanomidi/logo-horizontal-on-light.png" alt="Logo do Better NanoMidi" width="100%">
+  </picture>
 </p>
 
 <p align="center">
